@@ -17,7 +17,7 @@ $snapshotPaths=@(& git -C $repo ls-tree -r --name-only $commit)
 if($LASTEXITCODE -ne 0){throw 'Cannot inspect the requested source snapshot.'}
 $privatePaths=@($snapshotPaths|Where-Object {
     $_ -match '(?i)(^|/)(AGENTS\.md$|tests?/|__tests__/|screenshots/|samples?[^/]*/|样本[^/]*/|artifacts/|bin/|obj/|temp/|test-results/|reports/|diagnostics/|private/|local/|secrets/)' -or
-    $_ -match '(?i)(Tests?\.(cs|csproj)$|\.(exe|dll|pdb|mdb|zip|7z|rar|dmp|binlog|jsonl|pem|key|pfx|p12)$)' -or
+    $_ -match '(?i)(Tests?\.(cs|csproj)$|\.(exe|dll|pdb|mdb|zip|7z|rar|dmp|binlog|jsonl|pem|key|pfx|p12|strings\.json)$)' -or
     $_ -match '(^|/)\.env($|\.)'
 })
 if($privatePaths.Count){throw 'Selected snapshot contains local-only files. Commit the privacy cleanup before packaging.'}
@@ -106,6 +106,28 @@ foreach($worker in @('worker/Unpacker.Worker.exe','worker/modern/Unpacker.Modern
     $path=Join-Path $package $worker
     if([Diagnostics.FileVersionInfo]::GetVersionInfo($path).FileVersion -ne "$Version.0"){throw "Worker version mismatch: $worker"}
 }
+# Portable PDB document names can store absolute paths as separate blobs.
+# Inspect decoded names rather than searching the binary for a full path.
+$symbolCount=0
+foreach($symbol in Get-ChildItem -LiteralPath $package -Recurse -File -Filter '*.pdb'){
+    $stream=[IO.File]::OpenRead($symbol.FullName)
+    $provider=$null
+    try{
+        $provider=[System.Reflection.Metadata.MetadataReaderProvider]::FromPortablePdbStream($stream)
+        $metadata=$provider.GetMetadataReader()
+        foreach($handle in $metadata.Documents){
+            $document=$metadata.GetString($metadata.GetDocument($handle).Name)
+            if($document -match '^(?:[A-Za-z]:[\\/]|[\\/]{2}|/(?!_/|_packages/))'){
+                throw "A release symbol contains an unmapped source path: $($symbol.Name)"
+            }
+        }
+        $symbolCount++
+    }
+    finally{
+        if($provider){$provider.Dispose()}
+        $stream.Dispose()
+    }
+}
 & $entry analyzer $entry *> (Join-Path $run 'analyzer.json')
 if($LASTEXITCODE -ne 0){throw 'Packaged analyzer check failed.'}
 $null=Get-Content -LiteralPath (Join-Path $run 'analyzer.json') -Raw|ConvertFrom-Json
@@ -126,7 +148,7 @@ foreach($item in $manifest){
 if(@(Get-ChildItem -LiteralPath $expanded -Recurse -File).Count -ne $manifest.Count+1){throw 'Archive file count mismatch.'}
 $hash=(Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
 "$hash  $name-win.zip"|Set-Content -LiteralPath (Join-Path $output "$name-win.zip.sha256") -Encoding ascii
-[ordered]@{Version=$Version;Commit=$commit;Archive=$zip;Sha256=$hash;Bytes=(Get-Item -LiteralPath $zip).Length;VerifiedFiles=$manifest.Count;Checks='Packaged analyzer and archive hashes';AuditDirectory=$run}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $run 'verification.json') -Encoding utf8
+[ordered]@{Version=$Version;Commit=$commit;Archive=$zip;Sha256=$hash;Bytes=(Get-Item -LiteralPath $zip).Length;VerifiedFiles=$manifest.Count;VerifiedSymbols=$symbolCount;Checks='Packaged analyzer, symbol paths and archive hashes';AuditDirectory=$run}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $run 'verification.json') -Encoding utf8
 foreach($path in @($source,$stage,$verify)){Remove-ReleaseTemporary $path}
 Remove-ReleaseTemporary $archive
 Write-Output "PASS: $zip"

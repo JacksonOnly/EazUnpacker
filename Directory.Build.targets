@@ -3,5 +3,6 @@
     <!-- Keep developer-machine paths out of compiled metadata and symbols. -->
     <Deterministic>true</Deterministic>
     <PathMap>$(MSBuildThisFileDirectory)=/_/</PathMap>
+    <PathMap Condition="'$(NuGetPackageRoot)' != ''">$(PathMap),$(NuGetPackageRoot)=/_packages/</PathMap>
   </PropertyGroup>
 </Project>
