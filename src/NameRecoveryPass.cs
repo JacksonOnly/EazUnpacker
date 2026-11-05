@@ -122,6 +122,20 @@ internal static class NameRecoveryPass
         var originalFields = types.SelectMany(t => t.Fields).ToDictionary(f => f, f => f.Name.String);
         var originalProperties = types.SelectMany(t => t.Properties).ToDictionary(p => p, p => p.Name.String);
         var originalEvents = types.SelectMany(t => t.Events).ToDictionary(e => e, e => e.Name.String);
+        foreach(var constructor in GetAttributeOwners(module,types).SelectMany(o=>o.CustomAttributes)
+            .Select(a=>a.Constructor as MethodDef).OfType<MethodDef>().Distinct())
+        {
+            if(!originalMethods.ContainsKey(constructor) || constructor.IsConstructor || constructor.IsStatic ||
+                !constructor.IsRuntimeSpecialName || !constructor.IsSpecialName || !constructor.HasBody ||
+                constructor.MethodSig.RetType.ElementType!=ElementType.Void ||
+                constructor.DeclaringType.Methods.Any(m=>m.IsInstanceConstructor && comparer.Equals(m.MethodSig,constructor.MethodSig)) ||
+                !constructor.Body.Instructions.Any(i=>i.OpCode.Code==Code.Call && i.Operand is IMethod called &&
+                    called.Name==".ctor" && called.DeclaringType.FullName==constructor.DeclaringType.BaseType?.FullName))
+                continue;
+            string old=constructor.Name.String;
+            constructor.Name=".ctor";
+            Add(changes,"Method",constructor,old,".ctor",evidence:"custom-attribute metadata and base constructor call");
+        }
         var namedArguments = GetAttributeOwners(module, types).SelectMany(p => p.CustomAttributes).SelectMany(a => a.NamedArguments.Select(n => (Argument:n, Type:OwnType(a.AttributeType))))
             .Where(p => p.Type?.Module == module).Select(p => (p.Argument, Member:p.Argument.IsField
                 ? (IMemberDef?)p.Type!.Fields.FirstOrDefault(f => f.Name == p.Argument.Name)
