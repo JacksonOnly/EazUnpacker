@@ -114,9 +114,9 @@ foreach($symbol in Get-ChildItem -LiteralPath $package -Recurse -File -Filter '*
     $provider=$null
     try{
         $provider=[System.Reflection.Metadata.MetadataReaderProvider]::FromPortablePdbStream($stream)
-        $metadata=$provider.GetMetadataReader()
-        foreach($handle in $metadata.Documents){
-            $document=$metadata.GetString($metadata.GetDocument($handle).Name)
+        $symbolMetadata=$provider.GetMetadataReader()
+        foreach($handle in $symbolMetadata.Documents){
+            $document=$symbolMetadata.GetString($symbolMetadata.GetDocument($handle).Name)
             if($document -match '^(?:[A-Za-z]:[\\/]|[\\/]{2}|/(?!_/|_packages/))'){
                 throw "A release symbol contains an unmapped source path: $($symbol.Name)"
             }
