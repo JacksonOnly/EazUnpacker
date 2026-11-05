@@ -53,6 +53,10 @@ internal static class SourceModuleProjection
         { Attributes=TypeAttributes.NotPublic|TypeAttributes.Abstract|TypeAttributes.Sealed };
         module.Types.Add(container);
         foreach(var instruction in globalHandles)instruction.Operand=container;
+        // The global metadata row can carry an opaque name instead of the
+        // standard spelling. Expose it to the C# decompiler as a module row.
+        global.Name="<Module>";
+        global.Namespace="";
         for(int i=0;i<methods.Length;i++)
         {
             var method=methods[i];

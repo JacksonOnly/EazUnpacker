@@ -29,7 +29,8 @@ internal static class SourceCompiler
         var pdb=Path.ChangeExtension(assembly,".pdb");
         var data=new SourceDataPlan(assembly,projection);
         var readability=new ReadabilityStats();
-        var decompiler=new RecoveredProjectDecompiler(settings,resolver,File.Exists(pdb)?new RecoveredDebugInfo(pdb):null,data,readability){MaxDegreeOfParallelism=4};
+        var decompiler=new RecoveredProjectDecompiler(settings,resolver,
+            projection==null && File.Exists(pdb)?new RecoveredDebugInfo(pdb):null,data,readability){MaxDegreeOfParallelism=4};
         decompiler.ProgressIndicator=new DecompilerProgress();
         ProgressEvents.Send(6,"info","反编译类型/方法并导出工程文件");
         decompiler.DecompileProject(pe,output,CancellationToken.None);
@@ -67,7 +68,7 @@ internal static class SourceCompiler
         xml.Descendants("ApplicationDefinition").Remove();
         var resourceItems=new XElement("ItemGroup");xml.Root.Add(resourceItems);
         var resourceMap=new List<object>();
-        var resourceNames=new List<object>();
+        var resourceNames=new List<SourceResourceNames.Mapping>();
         using(var module=projection==null?dnlib.DotNet.ModuleDefMD.Load(assembly):dnlib.DotNet.ModuleDefMD.Load(projection))
         {
             string resourceDirectory="UnpackOriginalResources";
@@ -81,9 +82,10 @@ internal static class SourceCompiler
                 string file=resourceDirectory+"/resource_"+(index++).ToString("D4")+".bin";
                 byte[] bytes=resource.CreateReader().ToArray();File.WriteAllBytes(Path.Combine(output,file),bytes);
                 string name=resource.Name.String;
-                if(string.IsNullOrWhiteSpace(name) || !IsXmlNameValue(name))
+                if(string.IsNullOrWhiteSpace(name) || !IsXmlNameValue(name) || SourceResourceNames.RequiresShortMarker(name))
                 {
-                    string marker=SourceResourceNames.Marker(name,occupied);resourceNames.Add(new {Original=name,Placeholder=marker});name=marker;
+                    string marker=SourceResourceNames.Marker(name,occupied);
+                    resourceNames.Add(new SourceResourceNames.Mapping(name,marker));name=marker;
                 }
                 resourceItems.Add(new XElement("EmbeddedResource",new XAttribute("Include",file),new XAttribute("LogicalName",name)));
                 resourceMap.Add(new {Name=resource.Name.String,File=file,Bytes=bytes.Length});

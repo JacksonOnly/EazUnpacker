@@ -2,6 +2,7 @@ using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.CSharp.ProjectDecompiler;
 using ICSharpCode.Decompiler.CSharp.Syntax;
+using ICSharpCode.Decompiler.CSharp.Syntax.PatternMatching;
 using ICSharpCode.Decompiler.CSharp.Transforms;
 using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.DebugInfo;
@@ -68,6 +69,20 @@ internal sealed class SourceMemberCompatibility : DepthFirstAstVisitor,IAstTrans
             field.ReturnType.GetResolveResult().Type.GetDefinition() is not {Namespace:"",DeclaringType:null})
             return;
         field.ReturnType=new TypeSystemAstBuilder {AlwaysUseGlobal=true}.ConvertType(field.ReturnType.GetResolveResult().Type);
+    }
+
+    public override void VisitExpressionStatement(ExpressionStatement statement)
+    {
+        base.VisitExpressionStatement(statement);
+        if(statement.Expression is not ObjectCreateExpression creation || creation.GetResolveResult().Type.Kind!=TypeKind.Delegate)
+            return;
+        var scope=statement.Ancestors.FirstOrDefault(n=>n is MethodDeclaration or ConstructorDeclaration)??statement.Parent;
+        if(scope==null)return;
+        var names=new HashSet<string>(scope.Descendants.OfType<VariableInitializer>().Select(v=>v.Name)
+            .Concat(scope.Descendants.OfType<ParameterDeclaration>().Select(p=>p.Name)));
+        string name="unpackUnusedDelegate";
+        while(names.Contains(name))name+="_";
+        statement.ReplaceWith(new VariableDeclarationStatement(new SimpleType("var"),name,creation.Detach()));
     }
 }
 
@@ -139,6 +154,18 @@ internal sealed class MetadataCompatibility : DepthFirstAstVisitor,IAstTransform
     public override void VisitTypeDeclaration(TypeDeclaration type)
     {
         var constructors=type.Members.OfType<ConstructorDeclaration>().Where(c=>(c.Modifiers&Modifiers.Static)==0).ToArray();
+        if(constructors.Length>1)
+        {
+            // C# emits the same field initializer sequence in every direct-base
+            // constructor. Lift it once only when both syntax and binding agree.
+            var prefixes=constructors.Select(BasePrefix).ToArray();
+            var first=prefixes[0];
+            if(first is {Length:>0} && prefixes.All(prefix=>prefix?.Length==first.Length &&
+                prefix.Zip(first,SameStatement).All(equal=>equal)) &&
+                TryLiftFieldPrefix(type,constructors[0],first,constructors.SelectMany(c=>c.Parameters.Select(p=>p.Name))))
+                foreach(var prefix in prefixes)
+                    foreach(var statement in prefix!)statement.Remove();
+        }
         foreach(var constructor in constructors)
         {
             if(constructor.Body is null)continue;
@@ -155,6 +182,12 @@ internal sealed class MetadataCompatibility : DepthFirstAstVisitor,IAstTransform
                 baseStatement.Remove();continue;
             }
             var preceding=statements.TakeWhile(s=>s!=baseStatement).ToArray();
+            if(!self && constructors.Length==1 && TryLiftFieldPrefix(type,constructor,preceding))
+            {
+                foreach(var statement in preceding)statement.Remove();
+                preceding=Array.Empty<Statement>();
+                statements=constructor.Body.Statements.ToArray();
+            }
             if(constructors.Length==1 && TryInlineTemporaryFieldInitializations(type,constructor,preceding))
             {
                 foreach(var statement in preceding)statement.Remove();
@@ -204,6 +237,86 @@ internal sealed class MetadataCompatibility : DepthFirstAstVisitor,IAstTransform
             baseStatement.Remove();
         }
         base.VisitTypeDeclaration(type);
+    }
+
+    private static Statement[]? BasePrefix(ConstructorDeclaration constructor)
+    {
+        if(constructor.Body==null)return null;
+        var statements=constructor.Body.Statements.ToArray();
+        int index=Array.FindIndex(statements,s=>s is ExpressionStatement {Expression:InvocationExpression
+        {Target:MemberReferenceExpression {Target:BaseReferenceExpression,MemberName:".ctor" or "_002Ector"}}});
+        return index<0?null:statements.Take(index).ToArray();
+    }
+
+    private static bool SameStatement(Statement left,Statement right)
+    {
+        if(!left.Match(right).Success)return false;
+        static IEnumerable<string> Bindings(Statement statement)=>statement.DescendantsAndSelf.OfType<Expression>()
+            .Select(n=>n.GetResolveResult()).OfType<MemberResolveResult>()
+            .Select(r=>r.Member.FullName+"@"+r.Member.ParentModule?.FullAssemblyName);
+        return Bindings(left).SequenceEqual(Bindings(right),StringComparer.Ordinal);
+    }
+
+    private static bool TryLiftFieldPrefix(TypeDeclaration type,ConstructorDeclaration constructor,Statement[] prefix,
+        IEnumerable<string>? allParameters=null)
+    {
+        if(prefix.Length==0)return false;
+        IEnumerable<Statement> Flatten(Statement statement)=>statement is BlockStatement block
+            ?block.Statements.SelectMany(Flatten):new[]{statement};
+        var fields=type.Members.OfType<FieldDeclaration>().Where(f=>(f.Modifiers&Modifiers.Static)==0)
+            .SelectMany(f=>f.Variables.Select(v=>(Field:f,Variable:v))).ToArray();
+        if(fields.Any(f=>f.Variable.Initializer!=null))return false;
+        var preceding=new List<Statement>();
+        var initializers=new List<(int Index,Expression Value,Statement[] Before)>();
+        var parameters=new HashSet<string>(allParameters??constructor.Parameters.Select(p=>p.Name));
+        foreach(var statement in prefix.SelectMany(Flatten))
+        {
+            if(statement is ExpressionStatement {Expression:AssignmentExpression {Operator:AssignmentOperatorType.Assign} assignment})
+            {
+                string? name=assignment.Left switch
+                {
+                    MemberReferenceExpression {Target:ThisReferenceExpression} m=>m.MemberName,
+                    IdentifierExpression id when !parameters.Contains(id.Identifier) &&
+                        id.GetResolveResult() is MemberResolveResult {Member:IField {IsStatic:false}}=>id.Identifier,
+                    _=>null
+                };
+                int index=Array.FindIndex(fields,f=>f.Variable.Name==name);
+                if(index<0 || initializers.Count>0 && initializers[initializers.Count-1].Index>=index ||
+                    UsesInstanceOrParameter(assignment.Right))return false;
+                initializers.Add((index,assignment.Right,preceding.ToArray()));
+                preceding.Clear();
+            }
+            else if(statement is ExpressionStatement {Expression:InvocationExpression invoke} &&
+                invoke.GetResolveResult() is MemberResolveResult {Member:IMethod {IsStatic:true}} &&
+                !UsesInstanceOrParameter(invoke))
+                preceding.Add(statement);
+            else return false;
+        }
+        if(initializers.Count==0 || preceding.Count!=0)return false;
+        foreach(var initializer in initializers)
+        {
+            var (field,variable)=fields[initializer.Index];
+            if(initializer.Before.Length==0)
+            {
+                variable.Initializer=initializer.Value.Clone();
+                continue;
+            }
+            string factory="InitializeField"+initializer.Index;
+            while(type.Members.Any(m=>m.Name==factory))factory+="_";
+            var body=new BlockStatement();
+            foreach(var statement in initializer.Before)body.Statements.Add(statement.Clone());
+            body.Statements.Add(new ReturnStatement(initializer.Value.Clone()));
+            type.Members.Add(new MethodDeclaration {Name=factory,Modifiers=Modifiers.Private|Modifiers.Static,
+                ReturnType=field.ReturnType.Clone(),Body=body});
+            variable.Initializer=new InvocationExpression(new IdentifierExpression(factory));
+        }
+        return true;
+
+        bool UsesInstanceOrParameter(Expression expression)=>expression.DescendantsAndSelf.Any(node=>
+            node is ThisReferenceExpression or BaseReferenceExpression ||
+            node is IdentifierExpression identifier && parameters.Contains(identifier.Identifier) ||
+            node is Expression member && member.GetResolveResult() is MemberResolveResult {Member:{IsStatic:false}} &&
+                member is not ObjectCreateExpression);
     }
 
     private static bool TryInlineTemporaryFieldInitializations(TypeDeclaration type,ConstructorDeclaration constructor,Statement[] prefix)

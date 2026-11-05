@@ -6,27 +6,89 @@ namespace Unpacker;
 
 internal static class SourceResourceNames
 {
+    internal sealed class Mapping(string original,string placeholder)
+    {
+        public string Original { get; }=original;
+        public string Placeholder { get; }=placeholder;
+    }
+    internal static bool RequiresShortMarker(string name)=>Encoding.UTF8.GetByteCount(name)>512;
+
     internal static string Marker(string original,HashSet<string> occupied)
     {
         int length=Encoding.UTF8.GetByteCount(original);
         for(int index=0;index<4096;index++)
         {
             string number=index.ToString("X");
+            if(RequiresShortMarker(original))
+            {
+                string shortMarker="__UnpackResource"+number;
+                if(occupied.Add(shortMarker))return shortMarker;
+                continue;
+            }
             string candidate=length==1?("@!#$&()*+-.:=?[]^~"[index%17]).ToString():new string('@',Math.Max(1,length-number.Length))+number;
             if(Encoding.UTF8.GetByteCount(candidate)==length && occupied.Add(candidate))return candidate;
         }
         throw new NotSupportedException("Cannot allocate equal-byte-length resource name marker.");
     }
 
-    internal static void Configure(XDocument project,string output,List<object> map)
+    internal static void Configure(XDocument project,string output,List<Mapping> map)
     {
         if(map.Count==0)return;
+        bool useWriter=map.Any(entry=>RequiresShortMarker(entry.Original));
+        if(useWriter)
+        {
+            string support=Path.Combine(output,"UnpackBuildSupport");
+            Directory.CreateDirectory(support);
+            File.Copy(typeof(dnlib.DotNet.ModuleDefMD).Assembly.Location,Path.Combine(support,"dnlib.dll"));
+        }
         File.WriteAllText(Path.Combine(output,"UnpackResourceNames.json"),JsonConvert.SerializeObject(map,Formatting.Indented));
-        File.WriteAllText(Path.Combine(output,"UnpackResourceNames.ps1"),Script,new UTF8Encoding(true));
+        File.WriteAllText(Path.Combine(output,"UnpackResourceNames.ps1"),useWriter?MetadataScript:Script,new UTF8Encoding(true));
         project.Root!.Add(new XElement("Target",new XAttribute("Name","RestoreOpaqueResourceNames"),new XAttribute("AfterTargets","CoreCompile"),
             new XAttribute("Condition","'$(DesignTimeBuild)' != 'true'"),
             new XElement("Exec",new XAttribute("Command","powershell.exe -NoProfile -NonInteractive -File &quot;$(MSBuildProjectDirectory)/UnpackResourceNames.ps1&quot; -Assembly &quot;@(IntermediateAssembly->'%(FullPath)')&quot; -Map &quot;$(MSBuildProjectDirectory)/UnpackResourceNames.json&quot;".Replace("&quot;","\"")))));
     }
+
+    // Roslyn also limits metadata name length. Use a short compile-time
+    // marker and restore the exact long name in the intermediate PE and PDB.
+    private const string MetadataScript="""
+param([Parameter(Mandatory=$true)][string]$Assembly,[Parameter(Mandatory=$true)][string]$Map)
+$ErrorActionPreference='Stop'
+Add-Type -LiteralPath (Join-Path $PSScriptRoot 'UnpackBuildSupport/dnlib.dll')
+$module=[dnlib.DotNet.ModuleDefMD]::Load([IO.File]::ReadAllBytes($Assembly))
+$buffer=[IO.MemoryStream]::new()
+try{
+    $changed=$false
+    $entries=Get-Content -LiteralPath $Map -Raw -Encoding UTF8|ConvertFrom-Json
+    foreach($entry in $entries){
+        $matches=@($module.Resources|Where-Object { $_.Name.String -ceq $entry.Placeholder })
+        if($matches.Count -eq 0){
+            if(@($module.Resources|Where-Object { $_.Name.String -ceq $entry.Original }).Count -ne 1){throw 'Expected resource marker is missing'}
+            continue
+        }
+        if($matches.Count -ne 1){throw 'Ambiguous resource marker'}
+        $matches[0].Name=[dnlib.DotNet.UTF8String]::new([string]$entry.Original)
+        $changed=$true
+    }
+    if($changed){
+        $options=[dnlib.DotNet.Writer.ModuleWriterOptions]::new($module)
+        $options.MetadataOptions.Flags=[dnlib.DotNet.Writer.MetadataFlags]::PreserveAll
+        $pdb=[IO.Path]::ChangeExtension($Assembly,'.pdb')
+        if([IO.File]::Exists($pdb)){
+            $module.LoadPdb($pdb)
+            $options.WritePdb=$true
+            $options.PdbFileName=$pdb
+            $options.PdbFileNameInDebugDirectory=[IO.Path]::GetFileName($pdb)
+            $options.PdbOptions=[dnlib.DotNet.Writer.PdbWriterOptions]::Deterministic
+        }
+        $module.Write($buffer,$options)
+        [IO.File]::WriteAllBytes($Assembly,$buffer.ToArray())
+    }
+}
+finally{
+    $buffer.Dispose()
+    $module.Dispose()
+}
+""";
 
     // Roslyn treats an all-whitespace LogicalName as empty. The build emits a
     // unique equal-byte-length marker, then restores ONLY that #Strings entry.
@@ -62,7 +124,8 @@ for($i=0;$i -lt $count;$i++){
 }
 if($strings -lt 0){throw 'Missing #Strings heap'}
 $text=[Text.Encoding]::UTF8.GetString($bytes,$strings,$size)
-foreach($entry in @(Get-Content -LiteralPath $Map -Raw -Encoding UTF8|ConvertFrom-Json)){
+$entries=Get-Content -LiteralPath $Map -Raw -Encoding UTF8|ConvertFrom-Json
+foreach($entry in $entries){
     $needle=[char]0+$entry.Placeholder+[char]0
     $position=$text.IndexOf($needle,[StringComparison]::Ordinal)
     if($position -lt 0){
