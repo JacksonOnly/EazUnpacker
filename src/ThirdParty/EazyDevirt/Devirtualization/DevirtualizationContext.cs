@@ -74,6 +74,8 @@ internal record DevirtualizationContext
             resolver.SearchDirectories.Add(Path.GetDirectoryName(Options.Assembly.FullName)!);
             resolver.SearchDirectories.Add(AppDomain.CurrentDomain.BaseDirectory);
             resolver.SearchDirectories.Add(Path.GetDirectoryName(typeof(object).Assembly.Location)!);
+            foreach (string directory in Enumerable.Reverse(Options.DependencyDirectories))
+                if (Directory.Exists(directory)) resolver.SearchDirectories.Insert(0, directory);
             foreach (string directory in RuntimeReferencePaths.Discover(Module).Reverse())
                 resolver.SearchDirectories.Insert(0, directory);
         }

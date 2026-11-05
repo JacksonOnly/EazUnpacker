@@ -24,10 +24,13 @@ internal static class WorkerEntry
                 case "pipeline": return RecoveryPipeline.Run(args);
                 case "--validate-worker": return ClrValidator.Run(args[1],args[2],args[3],args.Length>4?int.Parse(args[4]):5,args.Length>5?args[5]:null);
                 case "--vm-worker":
+                {
                     ProgressEvents.Send(3,"info","加载 VM 还原后端");
+                    using var vmDependencies=new DependencyLoadScope(args.Length>4?args[4]:args[1],args[1]);
                     var vmProgress=new ProgressEvents.Counter(3);
                     File.WriteAllText(args[3],VmBridge.Process(args[1],args[2],(message,current,total)=>vmProgress.Report(message switch {
-                        "ResourceParsing"=>"VM 资源解析", "OpCodeMapping"=>"VM 操作码映射", "MethodDiscovery"=>"VM 方法发现", "MethodDevirtualizer"=>"读取 VM 方法体、校准头部布局", _=>message},current,total)).ToString());return 0;
+                        "ResourceParsing"=>"VM 资源解析", "OpCodeMapping"=>"VM 操作码映射", "MethodDiscovery"=>"VM 方法发现", "MethodDevirtualizer"=>"读取 VM 方法体、校准头部布局", _=>message},current,total),DependencyLoadScope.DependencyDirectories(args[1],args.Length>4?args[4]:args[1])).ToString());return 0;
+                }
                 case "--index-strings":
                 case "--strings-worker":
                     ProgressEvents.Send(3,"info","加载复处理后端");

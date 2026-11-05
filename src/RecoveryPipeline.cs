@@ -131,7 +131,7 @@ internal static class RecoveryPipeline
                 string vmWorker=postStrings.ModernRuntime
                     ?Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"modern","Unpacker.ModernWorker.exe")
                     :Assembly.GetExecutingAssembly().Location;
-                int code = File.Exists(vmWorker)?ProcessRunner.Run(vmWorker, new[] { "--vm-worker", cleaned, devirt, countFile }, Path.Combine(dir, "vm.log"), Math.Max(1, timeout / 2)):-1;
+                int code = File.Exists(vmWorker)?ProcessRunner.Run(vmWorker, new[] { "--vm-worker", cleaned, devirt, countFile, input }, Path.Combine(dir, "vm.log"), Math.Max(1, timeout / 2)):-1;
                 int count = File.Exists(countFile) ? int.Parse(File.ReadAllText(countFile)) : 0;
                 string methodsReport=Path.Combine(dir,"vm-methods.json");
                 var vmEntries=File.Exists(methodsReport)?JToken.Parse(File.ReadAllText(methodsReport)) as JArray??new JArray():new JArray();

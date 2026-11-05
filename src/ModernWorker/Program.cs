@@ -15,10 +15,12 @@ internal static class Program
         AppContext.SetSwitch("System.Runtime.Serialization.EnableUnsafeBinaryFormatterSerialization",false);
         try {
             WorkCache.Initialize();
-            if(args.Length==4 && args[0]=="--vm-worker")
+            if(args.Length>=4 && args[0]=="--vm-worker")
             {
+                using var vmDependencies=new DependencyLoadScope(args.Length>4?args[4]:args[1],args[1]);
                 var progress=new ProgressEvents.Counter(3);
-                File.WriteAllText(args[3],VmBridge.Process(args[1],args[2],(message,current,total)=>progress.Report(message,current,total)).ToString());
+                File.WriteAllText(args[3],VmBridge.Process(args[1],args[2],(message,current,total)=>progress.Report(message,current,total),
+                    DependencyLoadScope.DependencyDirectories(args[1],args.Length>4?args[4]:args[1])).ToString());
                 return 0;
             }
             if(args.Length>=4 && args[0]=="--validate-worker")

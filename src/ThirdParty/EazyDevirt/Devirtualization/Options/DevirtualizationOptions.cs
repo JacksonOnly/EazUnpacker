@@ -14,6 +14,9 @@ internal record DevirtualizationOptions
  public DirectoryInfo OutputPath { get; init; }
 #pragma warning restore CS8618
 
+ /// <summary>Declared probing directories, also used for external resource key candidates.</summary>
+ public string[] DependencyDirectories { get; init; } = Array.Empty<string>();
+
  /// <summary>
  /// Verbosity level
  /// </summary>

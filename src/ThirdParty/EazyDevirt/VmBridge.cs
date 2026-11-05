@@ -8,12 +8,13 @@ namespace EazyDevirt;
 /// <summary>Runs the devirtualizer in a per-input worker, preserving unrecovered methods.</summary>
 public static class VmBridge
 {
-    public static int Process(string input, string output,Action<string,int,int>? progress=null)
+    public static int Process(string input, string output,Action<string,int,int>? progress=null,string[]? dependencyDirectories=null)
     {
         var elapsed=System.Diagnostics.Stopwatch.StartNew();
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
         var options = new DevirtualizationOptions {
             Assembly = new FileInfo(input), OutputPath = new DirectoryInfo(Path.GetDirectoryName(output)!),
+            DependencyDirectories = dependencyDirectories ?? Array.Empty<string>(),
             Verbosity = Environment.GetEnvironmentVariable("UNPACKER_VM_DEBUG") == "1" ? 3 : Environment.GetEnvironmentVariable("UNPACKER_VM_VERBOSE")=="1"?1:0,
             PreserveAll = true, KeepTypes = true, NoVerify = false,
             SaveAnyway = true, OnlySaveDevirted = true, RequireDepsForGenericMethods = true

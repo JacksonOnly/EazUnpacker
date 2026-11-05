@@ -13,6 +13,7 @@ internal sealed class HomomorphicReader
 {
     private readonly DevirtualizationContext _context;
     private Assembly? _runtime;
+    private ResourceStringCandidates? _resourceKeys;
     private readonly Dictionary<string, object> _verifiedKeys = new();
     private readonly Dictionary<string,HashSet<object>> _rejectedKeys=new();
     private readonly HashSet<string> _searchedIntegers=new();
@@ -103,6 +104,11 @@ internal sealed class HomomorphicReader
                 found = StringKeyCandidates(method, verifierBytes, salt, flag).FirstOrDefault(Verify);
                 keySource="字符串 / 资源候选";
             }
+            if (found == null && kind is null or "System.String")
+            {
+                found = (_resourceKeys ??= new ResourceStringCandidates(_context)).External().FirstOrDefault(Verify);
+                keySource = "外部程序集 / BAML 资源候选";
+            }
             if(found==null&&kind=="System.String"){found=candidates.Cast<object>().FirstOrDefault(Verify);keySource="常量 / 显式候选";}
             int limit=int.TryParse(Environment.GetEnvironmentVariable("UNPACKER_VM_KEY_SEARCH_LIMIT"),out int configuredLimit)?configuredLimit:65536;
             if (found == null && kind!="System.String" && AllowBoundedSearch && limit > 0 && _integerSearchSeconds>0 && _searchedIntegers.Add(cacheId))
@@ -128,7 +134,7 @@ internal sealed class HomomorphicReader
                 foreach (var instruction in instructions.Take(guard.Index + 1).Take(35).Concat(instructions.Take(guard.Index + 1).Skip(Math.Max(0, guard.Index - 45))))
                     _context.Console.Info($"[{method.Parent.MetadataToken}] Key setup: {instruction}");
                 _context.Console.Info($"[{method.Parent.MetadataToken}] Guard {verifierDefinition.MetadataToken}; salt={salt}; flag={flag}; RVA={Convert.ToBase64String(verifierBytes)}");
-                throw new NotSupportedException($"Encrypted region {id} needs a verified {kind??"runtime"} key; {rejected.Count} distinct candidates rejected. "+(!AllowBoundedSearch?"Deferred until other VM producers are restored.":"No verified candidate; original method preserved."));
+                throw new NotSupportedException($"Encrypted region {id} needs a verified {kind??"runtime"} key; {rejected.Count} distinct candidates rejected. "+(!AllowBoundedSearch?"Deferred until other VM producers are restored.":"No verified candidate; original method preserved. For external resource keys, supply assets with UNPACKER_VM_KEY_ASSET_PATHS."));
             }
             key = found;
             var recovered=new EazyDevirt.Logging.VerifiedKeyRecord("0x"+method.Parent.MetadataToken.ToUInt32().ToString("X8"),id,key is int?"Int32":"String",key,keySource);
@@ -247,27 +253,6 @@ internal sealed class HomomorphicReader
 
     private IEnumerable<string> ResourceKeyCandidates()
     {
-        var result=new List<string>();
-        // ResourceReader.GetResourceData emits these format identifiers even
-        // when a method processes resources from another input assembly.
-        var resourceCodes=typeof(System.Resources.ResourceReader).Assembly.GetType("System.Resources.ResourceTypeCode");
-        if(resourceCodes?.IsEnum==true)result.AddRange(Enum.GetNames(resourceCodes).Select(n=>"ResourceTypeCode."+n));
-        foreach(var resource in _context.Module.Resources.Where(r=>r.IsEmbedded))
-        {
-            byte[]? bytes=resource.GetData();
-            if(bytes==null || bytes.Length<4 || BitConverter.ToUInt32(bytes,0)!=0xBEEFCACE)continue;
-            using var stream=new MemoryStream(bytes,false);
-            using var reader=new System.Resources.ResourceReader(stream);
-            var entries=reader.GetEnumerator();
-            while(entries.MoveNext())
-            {
-                string name=(string)entries.Key;
-                reader.GetResourceData(name,out string type,out byte[] data);
-                result.Add(name);result.Add(type);result.Add(type.Split(',')[0]);
-                if(type=="ResourceTypeCode.String")
-                {using var value=new BinaryReader(new MemoryStream(data,false));result.Add(value.ReadString());}
-            }
-        }
-        return result;
+        return (_resourceKeys ??= new ResourceStringCandidates(_context)).Local();
     }
 }

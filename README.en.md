@@ -97,8 +97,11 @@ Options may appear before or after paths. Unknown or duplicate options fail. Opt
 | `UNPACKER_VM_KEY_SEARCH_SECONDS` | Module-wide integer fallback time budget; default `20` seconds, at most `5` per verifier, `0` disables it, maximum `120` |
 | `UNPACKER_VM_INT32_KEYS` | Comma-separated integer candidates; original verification remains mandatory |
 | `UNPACKER_VM_STRING_KEYS` | Explicit string candidates as a JSON array; original verification remains mandatory |
+| `UNPACKER_VM_KEY_ASSET_PATHS` | Additional key resource files or directories, separated by `;` on Windows; supports managed assemblies, `.resources` and `.baml` |
 | `UNPACKER_VM_USE_KEY_CACHE=1` | Permit explicitly supplied historical candidate cache |
 | `UNPACKER_VM_KEY_CACHE_PATH` | Candidate cache path; no preset key table is bundled or read by default |
+
+External-resource string key candidates are also read from the input directory and declared dependency directories, without recursive scanning. Assets are read as data under file/count limits; every candidate must pass the original verifier. Supply the resource assets when they are not part of the input. Missing keys preserve the original method; verification is not bypassed and no program-specific keys are bundled.
 
 ## Temporary files and outputs
 
