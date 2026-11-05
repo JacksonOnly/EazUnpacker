@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
 using dnlib.DotNet;
@@ -9,33 +10,38 @@ namespace EazFixer
     internal sealed class StringResourceTable
     {
         internal const int MaxTextBytes = 1024 * 1024;
+        private const int MaxTableBytes = 128 * 1024 * 1024;
         private const int UnusedFlag = 0x10000000;
         private static readonly Encoding StrictUnicode = new UnicodeEncoding(false, false, true);
 
         internal readonly EmbeddedResource Resource;
         internal readonly int FileOffset;
+        internal readonly uint DecoderToken;
         internal readonly byte[] Data;
         private readonly StringResourceLayout _layout;
         private readonly byte[] _token;
         private readonly byte[] _globalSeed;
         private readonly int _seedSize, _first;
         private readonly Dictionary<int, Entry> _entries;
+        private readonly Dictionary<int, int> _logicalByPhysical;
         private int _state;
 
         internal sealed class Entry
         {
-            internal int Offset, Header, Start, Size, Flags;
+            internal int Offset, Physical, Header, Start, Size, Flags;
             internal int? Alias;
             internal string Text;
         }
 
-        internal StringResourceTable(EmbeddedResource resource, StringResourceLayout layout, HashSet<int> callIds, byte[] token)
+        internal StringResourceTable(EmbeddedResource resource, StringResourceLayout layout, HashSet<int> callIds, byte[] token, MethodDef decoder)
         {
             Resource = resource;
+            DecoderToken = decoder.MDToken.Raw;
+            _logicalByPhysical = StringResourceOffsets.Read(decoder);
             _layout = layout;
             _token = token?.Length == 8 ? token : null;
             var reader = resource.CreateReader();
-            if (reader.Length < 8 || reader.Length > 128 * 1024 * 1024) throw Invalid();
+            if (reader.Length < 8 || reader.Length > MaxTableBytes) throw Invalid();
             FileOffset = checked((int)reader.StartOffset);
             Data = reader.ToArray();
 
@@ -71,14 +77,20 @@ namespace EazFixer
         internal IEnumerable<Entry> Entries => _entries.Values.Where(entry => !entry.Alias.HasValue).OrderBy(entry => entry.Offset);
         internal Entry Find(int id) => _entries.TryGetValue(id ^ _layout.PositionMask ^ _state, out var e) && !e.Alias.HasValue ? e : null;
 
+        internal bool HasSameLayoutIds(StringResourceTable other) =>
+            _state == other._state && _entries.Count == other._entries.Count &&
+            _entries.All(pair => other._entries.TryGetValue(pair.Key, out var entry) && entry.Alias == pair.Value.Alias);
+
         private bool TryReadTable(int state, HashSet<int> callIds, out Dictionary<int, Entry> entries)
         {
             entries = new Dictionary<int, Entry>();
             int matches = 0;
-            for (int offset = _first; offset < Data.Length;)
+            for (int physical = _first; physical < Data.Length;)
             {
                 if (entries.Count >= 250000) return false;
-                int header = offset;
+                int offset = physical;
+                if (_logicalByPhysical != null && !_logicalByPhysical.TryGetValue(physical, out offset)) return false;
+                int header = physical;
                 if (_globalSeed == null)
                 {
                     int seedLength = _seedSize;
@@ -98,18 +110,19 @@ namespace EazFixer
                 int size = alias ? 4 : flags & _layout.LengthMask;
                 bool compressed = (flags & _layout.CompressedFlag) != 0;
                 bool bytes = (flags & _layout.ByteTextFlag) != 0;
-                int seedStart = offset + (_globalSeed == null && _seedSize == -1 ? 2 : 0);
+                int seedStart = physical + (_globalSeed == null && _seedSize == -1 ? 2 : 0);
                 if (size > MaxTextBytes || size > Data.Length - start ||
                     !alias && ((flags & UnusedFlag) != 0 || _globalSeed == null && header - seedStart < 3 ||
                         (compressed ? size < 4 : !bytes && (size & 1) != 0))) return false;
-                var entry = new Entry { Offset = offset, Header = header, Start = start, Size = size, Flags = flags };
+                var entry = new Entry { Offset = offset, Physical = physical, Header = header, Start = start, Size = size, Flags = flags };
                 if (alias) entry.Alias = (Data[start + 2] | (Data[start + 3] << 16) |
                     (Data[start] << 8) | (Data[start + 1] << 24)) ^
                     unchecked(-(_layout.RedirectMask ^ state)) ^ _layout.PositionMask ^ state;
                 entries.Add(offset, entry);
                 if (callIds.Contains(offset ^ _layout.PositionMask ^ state)) matches++;
-                offset = start + size;
+                physical = start + size;
             }
+            if (_logicalByPhysical != null && _logicalByPhysical.Count != entries.Count) return false;
             if (matches < Math.Min(2, callIds.Count)) return false;
             var known = new HashSet<int>(entries.Values.Where(e => !e.Alias.HasValue).Select(e => e.Offset));
             foreach (var entry in entries.Values.Where(e => e.Alias.HasValue))
@@ -133,7 +146,7 @@ namespace EazFixer
                     if (plain == null) return false;
                 }
                 textBytes += plain.Length;
-                if (textBytes > 128 * 1024 * 1024) return false;
+                if (textBytes > MaxTableBytes) return false;
                 if ((entry.Flags & _layout.ByteTextFlag) != 0)
                     entry.Text = new string(Array.ConvertAll(plain, value => (char)value));
                 else
@@ -145,7 +158,7 @@ namespace EazFixer
             return true;
         }
 
-        internal void Replace(byte[] output, Entry entry, string text)
+        private (byte[] Bytes, int Flag)[] Encode(string text)
         {
             if (text.Length > MaxTextBytes) throw new StringResourceException("替换文本超过大小限制。");
             byte[] unicode;
@@ -155,36 +168,85 @@ namespace EazFixer
             var choices = (narrow != null
                     ? new[] { (Bytes: narrow, Flag: _layout.ByteTextFlag), (Bytes: unicode, Flag: 0) }
                     : new[] { (Bytes: unicode, Flag: 0) })
-                .Where(choice => choice.Bytes.Length <= MaxTextBytes).ToArray();
+                .Where(choice => choice.Bytes.Length <= MaxTextBytes).OrderBy(choice => choice.Bytes.Length).ToArray();
+            if (choices.Length == 0) throw new StringResourceException("替换文本超过大小限制。");
+            return choices;
+        }
+
+        internal bool TryReplace(byte[] output, Entry entry, string text)
+        {
+            var choices = Encode(text);
             foreach (var choice in choices)
                 if (choice.Bytes.Length == entry.Size)
                 {
                     WriteFrame(output, entry, choice.Bytes, choice.Flag);
-                    return;
+                    return true;
                 }
-            foreach (var choice in choices.OrderBy(choice => choice.Bytes.Length))
+            foreach (var choice in choices)
             {
                 var packed = Compress(choice.Bytes, entry.Size);
                 if (packed == null) continue;
                 WriteFrame(output, entry, packed, choice.Flag | _layout.CompressedFlag);
-                return;
+                return true;
             }
-            throw new StringResourceException("条目 " + unchecked((uint)Id(entry)).ToString("X8") +
-                " 的替换文本无法装入原密文槽位（容量 " + entry.Size + " 字节）。");
+            return false;
+        }
+
+        internal (byte[] Data, int[] Offsets) Rebuild(Dictionary<Entry, string> edits)
+        {
+            using (var stream = new MemoryStream())
+            using (var writer = new BinaryWriter(stream))
+            {
+                writer.Write(Data, 0, _first);
+                var offsets = new int[_entries.Count * 2];
+                int index = 0;
+                foreach (var entry in _entries.Values.OrderBy(e => e.Offset))
+                {
+                    offsets[index++] = entry.Offset;
+                    offsets[index++] = checked((int)stream.Position);
+                    if (edits.TryGetValue(entry, out string text))
+                    {
+                        var choice = Encode(text)[0];
+                        int prefix = entry.Header - entry.Physical;
+                        EnsureCapacity(stream, prefix + 4 + choice.Bytes.Length);
+                        writer.Write(Data, entry.Physical, prefix);
+                        writer.Write(FrameHeader(entry, choice.Bytes.Length, choice.Flag));
+                        writer.Write(Transform(choice.Bytes, 0, choice.Bytes.Length, ReadSeed(entry, _state), _token, true));
+                    }
+                    else
+                    {
+                        // Original headers, variable seed lengths and aliases
+                        // remain keyed to their original logical offsets.
+                        int length = entry.Start + entry.Size - entry.Physical;
+                        EnsureCapacity(stream, length);
+                        writer.Write(Data, entry.Physical, length);
+                    }
+                }
+                return (stream.ToArray(), offsets);
+            }
+        }
+
+        private static void EnsureCapacity(Stream stream, int count)
+        {
+            if (stream.Position + count > MaxTableBytes)
+                throw new StringResourceException("回写后的字符串资源超过大小限制。");
         }
 
         private void WriteFrame(byte[] output, Entry entry, byte[] payload, int flags)
         {
             byte[] encrypted = Transform(payload, 0, payload.Length, ReadSeed(entry, _state), _token, true);
-            int header = (entry.Flags & ~(_layout.ByteTextFlag | _layout.CompressedFlag)) | flags;
-            Write32(output, FileOffset + entry.Header, header ^ entry.Offset ^ _layout.FrameMask ^ _state);
+            Write32(output, FileOffset + entry.Header, FrameHeader(entry, payload.Length, flags));
             Buffer.BlockCopy(encrypted, 0, output, FileOffset + entry.Start, encrypted.Length);
         }
+
+        private int FrameHeader(Entry entry, int length, int flags) =>
+            ((entry.Flags & ~(_layout.ByteTextFlag | _layout.CompressedFlag | _layout.LengthMask)) | flags | length) ^
+            entry.Offset ^ _layout.FrameMask ^ _state;
 
         private byte[] ReadSeed(Entry entry, int state)
         {
             if (_globalSeed != null) return _globalSeed;
-            int start = entry.Offset + (_seedSize == -1 ? 2 : 0);
+            int start = entry.Physical + (_seedSize == -1 ? 2 : 0);
             return new[] { (byte)(Data[start] ^ state), (byte)(Data[start + 1] ^ (state >> 8)),
                 (byte)(Data[start + 2] ^ (state >> 16)) };
         }

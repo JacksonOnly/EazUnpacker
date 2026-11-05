@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using dnlib.DotNet;
 using dnlib.DotNet.Emit;
+using dnlib.DotNet.Writer;
 using EazFixer.Processors;
 
 namespace EazFixer
@@ -54,7 +56,7 @@ namespace EazFixer
                     var resources = module.Resources.OfType<EmbeddedResource>().Where(r => r.Name == layout.ResourceName).ToArray();
                     if (resources.Length != 1) throw new StringResourceException("解码器没有唯一的嵌入字符串资源。");
                     var resource = resources[0];
-                    var table = new StringResourceTable(resource, layout, pair.Value, token);
+                    var table = new StringResourceTable(resource, layout, pair.Value, token, pair.Key);
                     string key = Hex(checked((int)resource.Rid));
                     if (_tables.ContainsKey(key)) throw new StringResourceException("同一资源关联多个解码器。");
                     if (table.FileOffset < 4 || table.Data.Length > image.Length - table.FileOffset ||
@@ -97,18 +99,52 @@ namespace EazFixer
             if (changes == 0) return _image;
 
             var output = (byte[])_image.Clone();
-            foreach (var edit in pending) edit.Table.Replace(output, edit.Entry, edit.Text);
+            var resized = new List<(StringResourceTable Table, Dictionary<StringResourceTable.Entry, string> Edits)>();
+            foreach (var group in pending.GroupBy(e => e.Table))
+            {
+                if (group.Any(edit => !edit.Table.TryReplace(output, edit.Entry, edit.Text)))
+                    resized.Add((group.Key, group.ToDictionary(edit => edit.Entry, edit => edit.Text)));
+            }
+            if (resized.Count != 0) output = RewriteResources(output, resized);
+
             var reread = new EncryptedStringEditor(output);
             var expected = pending.ToDictionary(e => (e.Table, e.Entry), e => e.Text);
+            if (reread._tables.Count != _tables.Count) throw VerificationFailed();
             foreach (var pair in _tables)
             {
-                if (!reread._tables.TryGetValue(pair.Key, out var verified)) throw VerificationFailed();
+                if (!reread._tables.TryGetValue(pair.Key, out var verified) ||
+                    !pair.Value.HasSameLayoutIds(verified)) throw VerificationFailed();
                 foreach (var entry in pair.Value.Entries)
                     if (verified.Find(pair.Value.Id(entry))?.Text !=
                         (expected.TryGetValue((pair.Value, entry), out var text) ? text : entry.Text))
                         throw VerificationFailed();
             }
             return output;
+        }
+
+        private static byte[] RewriteResources(byte[] image,
+            List<(StringResourceTable Table, Dictionary<StringResourceTable.Entry, string> Edits)> changes)
+        {
+            using (var module = ModuleDefMD.Load(image))
+            using (var output = new MemoryStream())
+            {
+                if (!module.IsILOnly || module.Metadata.ImageCor20Header.ManagedNativeHeader.VirtualAddress != 0)
+                    throw new StringResourceException("此 PE 含本机代码，无法扩容字符串资源。");
+                EazContext.PreserveSerializedMaxStack(module);
+                foreach (var (table, edits) in changes)
+                {
+                    if (!(module.ResolveToken(table.DecoderToken) is MethodDef decoder)) throw VerificationFailed();
+                    int index = module.Resources.ToList().FindIndex(resource => resource.Rid == table.Resource.Rid &&
+                        resource.Name == table.Resource.Name && resource is EmbeddedResource);
+                    if (index < 0) throw VerificationFailed();
+                    var resource = module.Resources[index];
+                    var rebuilt = table.Rebuild(edits);
+                    module.Resources[index] = new EmbeddedResource(resource.Name, rebuilt.Data, resource.Attributes) { Rid = resource.Rid };
+                    StringResourceOffsets.Install(module, decoder, rebuilt.Offsets);
+                }
+                module.Write(output, new ModuleWriterOptions(module) { MetadataOptions = { Flags = MetadataFlags.PreserveAll } });
+                return output.ToArray();
+            }
         }
 
         private static void CollectIds(ModuleDefMD module, Dictionary<MethodDef, MethodDef> wrappers,
