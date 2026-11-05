@@ -119,7 +119,7 @@ internal class MethodDevirtualizer : StageBase
         ReadExceptionHandlers(vmMethod);
 
         var wireDeclaringType = Resolver.ResolveType(vmMethod.MethodInfo.VMDeclaringType);
-        var wireReturnType = Resolver.ResolveType(vmMethod.MethodInfo.VMReturnType)!.ToTypeSignature();
+        var wireReturnType = Resolver.ResolveTypeSignature(vmMethod.MethodInfo.VMReturnType)!;
         bool wholeMethod = Ctx.VMMethods.Count(candidate => candidate.Parent == vmMethod.Parent) == 1 &&
             vmMethod.Parent.Name == vmMethod.MethodInfo.Name &&
             (vmMethod.Parent.DeclaringType!.FullName == wireDeclaringType?.FullName ||
@@ -138,7 +138,7 @@ internal class MethodDevirtualizer : StageBase
             if (owner?.DeclaringModule != Ctx.Module)
                 throw new NotSupportedException("Inlined VM body declaring type is outside the input module.");
             var arguments = vmMethod.MethodInfo.VMParameters.Select(parameter => {
-                var type = Resolver.ResolveType(parameter.VMType)!.ToTypeSignature();
+                var type = Resolver.ResolveTypeSignature(parameter.VMType)!;
                 return parameter.In && type is not ByReferenceTypeSignature ? new ByReferenceTypeSignature(type) : type;
             }).ToArray();
             vmMethod.RecoveredAdapter = InlineVmCallAdapter.Create(vmMethod, owner, arguments);
@@ -231,8 +231,8 @@ internal class MethodDevirtualizer : StageBase
         vmMethod.Locals = new List<CilLocalVariable>();
         foreach (var local in vmMethod.MethodInfo.VMLocals)
         {
-            var type = Resolver.ResolveType(local.VMType)!;
-            vmMethod.Locals.Add(new CilLocalVariable(type.ToTypeSignature()));
+            var type = Resolver.ResolveTypeSignature(local.VMType)!;
+            vmMethod.Locals.Add(new CilLocalVariable(type));
 
             // if (Ctx.Options.VeryVeryVerbose)
             //     Ctx.Console.Info($"[{vmMethod.MethodInfo.Name}] Local: {type.Name}");

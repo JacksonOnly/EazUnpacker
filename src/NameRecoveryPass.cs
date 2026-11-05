@@ -310,9 +310,22 @@ internal static class NameRecoveryPass
         foreach (var method in types.SelectMany(t=>t.Methods).Where(m=>m.HasBody))
         {
             var instructions=method.Body.Instructions;
+            var dynamicNames=DynamicMemberNames(method.Body);
             for(int i=0;i<instructions.Count;i++)
             {
                 if(instructions[i].OpCode.Code!=Code.Ldstr || instructions[i].Operand is not string value) continue;
+                if(dynamicNames.TryGetValue(instructions[i],out var receiver))
+                {
+                    // Binder member names can be identical to unrelated type
+                    // names. Update them only using the proven CallSite receiver.
+                    if(OwnType(receiver.Type) is { } owner)
+                    {
+                        var alternatives=owner.Methods.Where(m=>originalMethods[m]==value &&
+                            m.MethodSig.Params.Count==receiver.ArgumentCount).Select(m=>m.Name.String).Distinct().ToArray();
+                        if(alternatives.Length==1)instructions[i].Operand=alternatives[0];
+                    }
+                    continue;
+                }
                 if(typeStrings.TryGetValue(value,out string typeName)) {instructions[i].Operand=typeName;continue;}
                 int comma=value.IndexOf(',');
                 if(comma>0 && typeStrings.TryGetValue(value.Substring(0,comma),out typeName)) {instructions[i].Operand=typeName+value.Substring(comma);continue;}
@@ -356,6 +369,57 @@ internal static class NameRecoveryPass
             method.Name=name;
             foreach(var change in changes.Where(c=>c.Kind=="Method" && c.Token==method.MDToken.ToString()))change.Renamed=name;
         }
+    }
+
+    private static Dictionary<Instruction,(ITypeDefOrRef? Type,int ArgumentCount)> DynamicMemberNames(CilBody body)
+    {
+        var result=new Dictionary<Instruction,(ITypeDefOrRef? Type,int ArgumentCount)>();
+        var il=body.Instructions;
+        static bool IsBinder(Instruction i)=>i.Operand is IMethod m &&
+            m.DeclaringType.FullName=="Microsoft.CSharp.RuntimeBinder.Binder" && m.Name=="InvokeMember" &&
+            m.MethodSig.Params.Count==5;
+        if(!il.Any(IsBinder))return result;
+        var joins=new HashSet<Instruction>(il.SelectMany(i=>i.Operand switch
+        { Instruction target=>new[]{target},IList<Instruction> targets=>targets,_=>Array.Empty<Instruction>() }));
+        foreach(var handler in body.ExceptionHandlers)
+            foreach(var point in new[]{handler.TryStart,handler.HandlerStart,handler.FilterStart,handler.TryEnd,handler.HandlerEnd})
+                if(point!=null)joins.Add(point);
+        var stack=new List<Instruction?>();
+        for(int i=0;i<il.Count;i++)
+        {
+            var instruction=il[i];
+            if(joins.Contains(instruction))stack.Clear();
+            if(IsBinder(instruction) && stack.Count>=5 && stack[stack.Count-4] is { } literal)
+            {
+                (ITypeDefOrRef? Type,int ArgumentCount) receiver=(null,0);
+                if(i+1<il.Count && il[i+1].Operand is IMethod create && create.Name=="Create" &&
+                    create.DeclaringType is TypeSpec {TypeSig:GenericInstSig site} &&
+                    site.GenericType.FullName=="System.Runtime.CompilerServices.CallSite`1" &&
+                    site.GenericArguments.Count==1 && site.GenericArguments[0] is GenericInstSig signature &&
+                    signature.GenericArguments.Count>=2 &&
+                    signature.GenericArguments[0].FullName=="System.Runtime.CompilerServices.CallSite")
+                {
+                    bool returns=signature.GenericType.FullName.StartsWith("System.Func`",StringComparison.Ordinal);
+                    bool action=signature.GenericType.FullName.StartsWith("System.Action`",StringComparison.Ordinal);
+                    if(returns || action)
+                        receiver=(signature.GenericArguments[1].ToTypeDefOrRef(),signature.GenericArguments.Count-2-(returns?1:0));
+                }
+                if(result.TryGetValue(literal,out var previous) && previous!=receiver)result[literal]=(null,0);
+                else result[literal]=receiver;
+            }
+            if(instruction.OpCode.Code==Code.Dup)
+            {
+                stack.Add(stack.Count==0?null:stack[stack.Count-1]);
+                continue;
+            }
+            instruction.CalculateStackUsage(out int pushes,out int pops);
+            if(pops<0 || pops>stack.Count)stack.Clear();
+            else if(pops>0)stack.RemoveRange(stack.Count-pops,pops);
+            for(int n=0;n<pushes;n++)stack.Add(instruction.OpCode.Code==Code.Ldstr?instruction:null);
+            if(instruction.OpCode.FlowControl is FlowControl.Branch or FlowControl.Cond_Branch or FlowControl.Throw or FlowControl.Return)
+                stack.Clear();
+        }
+        return result;
     }
 
     private static Dictionary<PropertyDef,string> BuildPropertyContractNames(TypeDef[] types,

@@ -22,6 +22,7 @@ internal class Resolver
     private VMBinaryReader VMStreamReader { get; }
     
     private Dictionary<int, object?> Cache { get; }
+    private Dictionary<int, TypeSignature> TypeSignatures { get; } = new();
     private TypeReference[] OriginalTypeReferences { get; }
 
     public ITypeDefOrRef? ResolveType(VMInlineOperand inlineOperand)
@@ -73,7 +74,7 @@ internal class Resolver
         typeSig=RepairTypeScope(typeSig);
 
         if (data.HasGenericTypeParameters)
-            typeSig = InstantiateTypeShape(typeSig, data.GenericParameters.Select(x => ResolveType(x)!.ToTypeSignature()).ToArray());
+            typeSig = InstantiateTypeShape(typeSig, data.GenericParameters.Select(x => ResolveTypeSignature(x)!).ToArray());
 
         var typeDefOrRef = typeSig.ToTypeDefOrRef();
         if (SignatureComparer.Default.Equals(typeDefOrRef.Scope?.GetAssembly(), Ctx.Module.Assembly))
@@ -87,9 +88,24 @@ internal class Resolver
         else
             typeDefOrRef = Ctx.Importer.ImportType(typeDefOrRef);
         
+        // A bare TypeRef cannot retain the CLASS/VALUETYPE bit from the
+        // signature. Keep the proven signature for method and local operands.
+        TypeSignatures[position] = Ctx.Importer.ImportTypeSignature(typeSig);
         Cache.Add(position, typeDefOrRef);
         return typeDefOrRef;
     }
+
+    internal TypeSignature? ResolveTypeSignature(VMInlineOperand operand) =>
+        operand.IsToken ? SignatureFor(ResolveType(operand)) : ResolveTypeSignature(operand.Position);
+
+    internal TypeSignature? ResolveTypeSignature(int position)
+    {
+        var type = ResolveType(position);
+        return TypeSignatures.TryGetValue(position, out var signature) ? signature : SignatureFor(type);
+    }
+
+    private TypeSignature? SignatureFor(ITypeDefOrRef? type) =>
+        type == null ? null : Ctx.Importer.ImportTypeSignature(RepairTypeScope(type.ToTypeSignature()));
 
     private static TypeSignature ApplyParameterShape(TypeSignature parameter, string name)
     {
@@ -431,21 +447,21 @@ internal class Resolver
             return null;
         }
 
-        var returnType = ResolveType(data.ReturnType.Position);
+        var returnType = ResolveTypeSignature(data.ReturnType.Position);
         if (returnType == null)
         {
             Ctx.Console.Error($"Failed to resolve return type on vm method {data.Name}!");
             return null;
         }
         
-        var vmGenericInstanceMethodSig = data.HasGenericParameters ? new GenericInstanceMethodSignature(data.GenericParameters.Select(x => ResolveType(x)?.ToTypeSignature()!)) : null;
+        var vmGenericInstanceMethodSig = data.HasGenericParameters ? new GenericInstanceMethodSignature(data.GenericParameters.Select(x => ResolveTypeSignature(x)!)) : null;
         var vmGenericContext = GenericContext.FromType(declaringTypeDefOrRef).WithMethod(vmGenericInstanceMethodSig!);
-        var vmParameters = data.Parameters.Select(x => ResolveType(x)?.ToTypeSignature()!).ToArray();
+        var vmParameters = data.Parameters.Select(x => ResolveTypeSignature(x)!).ToArray();
 
         var vmMethodSig = (data.IsStatic
-                ? MethodSignature.CreateStatic(returnType.ToTypeSignature(),
+                ? MethodSignature.CreateStatic(returnType,
                     vmGenericContext.Method?.TypeArguments.Count ?? 0, vmParameters)
-                : MethodSignature.CreateInstance(returnType.ToTypeSignature(),
+                : MethodSignature.CreateInstance(returnType,
                     vmGenericContext.Method?.TypeArguments.Count ?? 0, vmParameters))
             .InstantiateGenericTypes(vmGenericContext);
         
@@ -561,19 +577,19 @@ internal class Resolver
         if (declaringTypeDefOrRef is null)
             throw new Exception("Failed to resolve eaz call declaring type!");
         
-        var returnType = ResolveType(methodInfo.VMReturnType);
+        var returnType = ResolveTypeSignature(methodInfo.VMReturnType);
         if (returnType == null)
         {
             Ctx.Console.Error($"Failed to resolve eaz call {methodInfo.Name} return type!");
             return null;
         }
         
-        var vmParameters = methodInfo.VMParameters.Select(x => ResolveType(x.VMType)?.ToTypeSignature()!).ToArray();
+        var vmParameters = methodInfo.VMParameters.Select(x => ResolveTypeSignature(x.VMType)!).ToArray();
 
         var vmMethodSig = (isStatic
-                ? MethodSignature.CreateStatic(returnType.ToTypeSignature(),
+                ? MethodSignature.CreateStatic(returnType,
                     vmGenericContext.Method?.TypeArguments.Count ?? 0, vmParameters)
-                : MethodSignature.CreateInstance(returnType.ToTypeSignature(),
+                : MethodSignature.CreateInstance(returnType,
                     vmGenericContext.Method?.TypeArguments.Count ?? 0, vmParameters.Skip(1))) // instance eaz calls will contain declaring type as first parameter
             .InstantiateGenericTypes(vmGenericContext);
         
