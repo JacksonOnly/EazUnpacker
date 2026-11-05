@@ -14,6 +14,15 @@ namespace EazFixer
         public string Status { get; set; }
         public string Detail { get; set; }
         public int Changes { get; set; }
+        public List<EmbeddedAssemblyExport> Exports { get; set; } = new List<EmbeddedAssemblyExport>();
+    }
+
+    public sealed class EmbeddedAssemblyExport
+    {
+        public string File { get; set; }
+        public string Identity { get; set; }
+        public string Resource { get; set; }
+        public string Format { get; set; }
     }
 
     /// <summary>Runs the retained reference processors without deleting VM dependencies.</summary>
@@ -45,7 +54,8 @@ namespace EazFixer
                     results.Add(new FixerStageResult {
                         Name = proc.GetType().Name,
                         Status = proc.Processed ? proc.WarningCount > 0 ? "partial" : "success" : proc.NotDetected ? "not-detected" : "failed",
-                        Detail = proc.DetailMessage, Changes = changes });
+                        Detail = proc.DetailMessage, Changes = changes,
+                        Exports = proc is Processors.AssemblyResolver resolver ? resolver.Exports : new List<EmbeddedAssemblyExport>() });
                     progress?.Invoke(proc.GetType().Name,results[results.Count-1].Status,changes);
                 }
                 if(runControlFlow)

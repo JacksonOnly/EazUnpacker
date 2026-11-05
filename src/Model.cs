@@ -21,6 +21,7 @@ internal sealed class SampleResult
     public bool ClrValidationRequested {get;set;}
     public string Sha256 { get; set; } = "";
     public List<StageResult> Stages { get; set; } = new();
+    public List<EazFixer.EmbeddedAssemblyExport> EmbeddedAssemblies { get; set; } = new();
     public AssemblyInfo? Before { get; set; }
     public AssemblyInfo? After { get; set; }
 }

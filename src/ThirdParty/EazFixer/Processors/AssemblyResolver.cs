@@ -14,7 +14,7 @@ namespace EazFixer.Processors
     {
         private TypeDef _assemblyResolver;
         private List<MethodDef> _manifestMethods;
-        private readonly HashSet<string> _extractedResources = new HashSet<string>(StringComparer.Ordinal);
+        internal List<EmbeddedAssemblyExport> Exports { get; } = new List<EmbeddedAssemblyExport>();
         private List<EmbeddedAssemblyInfo> _assemblies;
         private MethodInfo _decrypter;
         private MethodInfo _decompressor;
@@ -102,6 +102,7 @@ namespace EazFixer.Processors
                         if (_decompressor == null) throw new Exception("No unambiguous assembly decompressor found");
                         buffer = _decompressor.Invoke(null, new object[] { buffer }) as byte[] ?? throw new InvalidDataException("Assembly decompressor returned no bytes");
                     }
+                    string filename, identity;
                     using (var module = ModuleDefMD.Load(buffer))
                     {
                         if (module.Assembly == null) throw new InvalidDataException("Embedded image is not an assembly");
@@ -112,16 +113,21 @@ namespace EazFixer.Processors
                             || !string.Equals(actual.CultureName ?? "", expected.CultureName ?? "", StringComparison.OrdinalIgnoreCase)
                             || !(actual.GetPublicKeyToken() ?? new byte[0]).SequenceEqual(expected.GetPublicKeyToken() ?? new byte[0]))
                             throw new InvalidDataException("Extracted assembly identity mismatch: expected " + assembly.Fullname + "; actual " + module.Assembly.FullName);
+                        filename = actual.Name + (module.EntryPoint == null ? ".dll" : ".exe");
+                        identity = actual.FullName;
                     }
-                    var filename = Path.GetFileName(assembly.Filename);
-                    if (filename != assembly.Filename || string.IsNullOrWhiteSpace(filename) || filename == "." || filename == ".." || filename.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                    if (filename != Path.GetFileName(filename) || filename.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
                         throw new InvalidDataException("Embedded assembly filename is not a simple filename");
                     var destination = Path.Combine(path, filename);
                     // An embedded alias must never overwrite the main recovered assembly.
                     if (string.Equals(Path.GetFullPath(destination), Path.GetFullPath(Flags.OutFile), StringComparison.OrdinalIgnoreCase))
                         throw new InvalidDataException("Embedded assembly destination collides with the recovered output");
-                    File.WriteAllBytes(destination, buffer);
-                    _extractedResources.Add(assembly.ResourceName); extracted++; ExtractedCount++;
+                    if (File.Exists(destination) && !File.ReadAllBytes(destination).SequenceEqual(buffer))
+                        throw new InvalidDataException("Conflicting embedded assembly filename.");
+                    if (!File.Exists(destination)) File.WriteAllBytes(destination, buffer);
+                    Exports.Add(new EmbeddedAssemblyExport { File=destination, Identity=identity, Resource=assembly.ResourceName,
+                        Format=aliases==0 ? "eaz" : "eaz-aliased" });
+                    extracted++; ExtractedCount++;
                     report.Add("Extracted: " + assembly.Fullname + " -> " + destination);
                 }
                 catch (Exception error)
@@ -156,30 +162,9 @@ namespace EazFixer.Processors
             catch (ArgumentException) { return false; }
             catch (FileLoadException) { return false; }
         }
-        protected override void CleanupInternal()
-        {
-            if (WarningCount > 0) return;
-            //remove the call to the method that sets OnAssemblyResolve
-            var modType = Ctx.Module.GlobalType ?? throw new Exception("Could not find <Module>");
-            var instructions = modType.FindStaticConstructor()?.Body?.Instructions ?? throw new Exception("Missing <Module> .cctor");
-            foreach (Instruction instr in instructions)
-            {
-                if (instr.OpCode.Code != Code.Call) continue;
-                if (!(instr.Operand is MethodDef md)) continue;
-
-                if (md.DeclaringType == _assemblyResolver)
-                    instr.OpCode = OpCodes.Nop;
-            }
-
-            //remove types
-            if (_decompressor == null) //if it is present, more stuff is going on that I don't know about (better be safe)
-                Ctx.Module.Types.Remove(_assemblyResolver);
-
-            //remove resources
-            foreach (var resource in _extractedResources)
-                Ctx.Module.Resources.Remove(Ctx.Module.Resources.SingleOrDefault(a => a.Name == resource)
-                                            ?? throw new Exception("Resource name not unique (or present)"));
-        }
+        // The pipeline removes a resolver only after proving its payloads
+        // are publishable and that no live IL still uses the resolver.
+        protected override void CleanupInternal() { }
 
         private bool CanBeAssemblyResolver(TypeDef t)
         {

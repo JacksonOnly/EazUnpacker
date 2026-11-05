@@ -7,8 +7,15 @@ namespace Unpacker;
 
 internal static class ModuleResourceRestore
 {
-    internal static int Process(string input)
+    internal sealed class Carrier(uint handler,string resource)
     {
+        internal uint Handler { get; }=handler;
+        internal string Resource { get; }=resource;
+    }
+
+    internal static int Process(string input,out Carrier? carrier)
+    {
+        carrier=null;
         using var module=ModuleDefMD.Load(File.ReadAllBytes(input));
         var init=module.GlobalType?.FindStaticConstructor()?.Body?.Instructions;
         if(init==null)return 0;
@@ -72,6 +79,7 @@ internal static class ModuleResourceRestore
             module.Resources.Add(new EmbeddedResource(item.Name,payload,item.Attributes));
             added++;
         }
+        carrier=new Carrier(handlers[0].MDToken.Raw,name);
         if(added==0)return 0;
         foreach(var method in module.GetTypes().SelectMany(t=>t.Methods).Where(m=>m.HasBody))
             method.Body.KeepOldMaxStack=true;

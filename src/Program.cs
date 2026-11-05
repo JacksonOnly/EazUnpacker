@@ -68,6 +68,13 @@ internal static class Program
             // Configuration and optional source work must not withhold the file.
             string recovered=result.Output;
             result.After??=AssemblyInspector.Inspect(recovered);
+            int dependencies=DependencyPublisher.Publish(result.EmbeddedAssemblies,run,input,output);
+            if(dependencies>0)
+            {
+                result.Stages.Add(new StageResult{Name="EmbeddedAssemblyPublish",Status="success",Changes=dependencies,
+                    Detail="Published exact embedded assembly images alongside the output before publishing the main PE."});
+                progress.Report(5,"success","已就位内嵌程序集："+dependencies+" 个");
+            }
             progress.Report(5,"info",exportSource?"发布恢复文件（源码重建将单独检查）":"发布恢复文件");
             if(result.After.ModernRuntime && Path.GetExtension(output).Equals(".exe",StringComparison.OrdinalIgnoreCase))
             {
@@ -126,7 +133,7 @@ internal static class Program
                 var build=JObject.Parse(File.ReadAllText(Path.Combine(run,"source-build.json")));
                 result.RebuiltAssembly=(string?)build["RebuiltAssembly"]??"";
                 string vmReport=Path.Combine(run,"vm-methods.json");
-                if(validateClr && File.Exists(vmReport))
+                if(validateClr && File.Exists(vmReport) && ClrValidator.ReadTargets(vmReport).Count>0)
                 {
                     int rebuiltCode;
                     string detail;
