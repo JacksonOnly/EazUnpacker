@@ -9,8 +9,8 @@ namespace Unpacker;
 
 internal static class StringResourceCommand
 {
-    internal const string Usage = "用法：Unpacker strings export <输入EXE/DLL> <清单.strings.json>\n" +
-        "      Unpacker strings apply <输入EXE/DLL> <清单.strings.json> <输出EXE/DLL|--in-place>";
+    internal const string Usage = "用法：Unpacker strings [export] <输入EXE/DLL> [清单.strings.json]\n" +
+        "      Unpacker strings apply <输入EXE/DLL> [清单.strings.json] [输出EXE/DLL|--in-place]";
     private const int CatalogVersion = 1;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
@@ -18,15 +18,22 @@ internal static class StringResourceCommand
     {
         try
         {
-            bool export = args.Length == 4 && args[1] == "export";
-            if (!export && !(args.Length == 5 && args[1] == "apply"))
+            bool export = args.Length < 2 || args[1] != "apply";
+            int first = args.Length >= 2 && (args[1] == "export" || args[1] == "apply") ? 2 : 1;
+            if (args.Length <= first || args.Length > first + (export ? 2 : 3))
                 throw new CommandException(Usage);
-
-            string input = BinaryPath(args[2]);
-            string catalog = Path.GetFullPath(args[3]);
+            string input = BinaryPath(args[first]);
+            string[] trailing = args.Skip(first + 1).ToArray();
+            bool hasCatalog = trailing.Length != 0 && (export || trailing.Length == 2 ||
+                !IsBinary(trailing[0]) && trailing[0] != "--in-place");
+            if (hasCatalog && trailing[0].StartsWith("--", StringComparison.Ordinal))
+                throw new CommandException(Usage);
+            string catalog = hasCatalog ? Path.GetFullPath(trailing[0]) : input + ".strings.json";
             if (SamePath(input, catalog)) throw new CommandException("输入程序和字符串清单必须使用不同文件。");
-            bool inPlace = !export && args[4] == "--in-place";
-            string output = export ? catalog : inPlace ? input : BinaryPath(args[4]);
+            string? destination = export ? null : trailing.Skip(hasCatalog ? 1 : 0).SingleOrDefault();
+            bool inPlace = destination == "--in-place";
+            string output = export ? catalog : inPlace ? input : destination == null ?
+                Path.ChangeExtension(input, ".edited" + Path.GetExtension(input)) : BinaryPath(destination);
             if (!export && !inPlace && (SamePath(input, output) || SamePath(catalog, output)))
                 throw new CommandException("输出路径必须不同；覆盖输入请显式使用 --in-place。");
             if (!File.Exists(input)) throw new CommandException("输入程序不存在。");
@@ -112,11 +119,14 @@ internal static class StringResourceCommand
     private static string BinaryPath(string path)
     {
         string full = Path.GetFullPath(path);
-        if (!Path.GetExtension(full).Equals(".exe", StringComparison.OrdinalIgnoreCase) &&
-            !Path.GetExtension(full).Equals(".dll", StringComparison.OrdinalIgnoreCase))
+        if (!IsBinary(full))
             throw new CommandException("程序文件必须使用 EXE 或 DLL 扩展名。");
         return full;
     }
+
+    private static bool IsBinary(string path) =>
+        Path.GetExtension(path).Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
+        Path.GetExtension(path).Equals(".dll", StringComparison.OrdinalIgnoreCase);
 
     private static bool SamePath(string left, string right) => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
 

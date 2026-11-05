@@ -58,15 +58,15 @@
 ## 原位编辑加密字符串
 
 ```powershell
-.\Unpacker.exe strings export ".\input\input.exe" ".\local\input.strings.json"
-.\Unpacker.exe strings apply ".\input\input.exe" ".\local\input.strings.json" ".\output\edited.exe"
+.\Unpacker.exe strings ".\local\input.exe"
+.\Unpacker.exe strings apply ".\local\input.exe"
 # 或覆盖原件，同时生成 .bak 备份
-.\Unpacker.exe strings apply ".\input\input.exe" ".\local\input.strings.json" --in-place
+.\Unpacker.exe apply ".\local\input.exe" --in-place
 ```
 
-只编辑清单中的 `text`；可删去不需要修改的条目。清单与导出时的程序绑定，再次编辑已改文件时需重新导出。清单含解密文本，请仅在本地保存。
+导出和回写默认使用与输入同目录的 `input.exe.strings.json`；也可显式指定清单路径。回写默认另存为 `input.edited.exe`，可指定其他输出或使用 `--in-place`。只编辑清单中的 `text`；可删去不需要修改的条目。清单与导出时的程序绑定，再次编辑已改文件时需重新导出。清单含解密文本，请仅在本地保存。
 
-支持可静态识别的托管 PE 嵌入字符串表。不执行目标程序，不改 IL，也不移动记录；新文本编码或压缩后必须装入原密文槽位。回写会重新解密核对；有条目无法写入时，不生成部分结果。修改会使已有数字签名失效，工具不会重新签名。
+支持可静态识别的托管 PE 嵌入字符串表。不执行目标程序，也不脱壳。可缩短、清空或加长字符串；超出原槽位时重排资源并给原解码器添加偏移映射，保留字符串 ID 和原调用点。单条编码文本上限 1 MiB。回写会重新解密核对，不生成部分结果；修改会使已有数字签名失效。
 
 ## 参数与退出码
 

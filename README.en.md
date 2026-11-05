@@ -58,15 +58,15 @@ Input and output must differ. Available recovered assemblies are published even 
 ## Edit encrypted strings in place
 
 ```powershell
-.\Unpacker.exe strings export ".\input\input.exe" ".\local\input.strings.json"
-.\Unpacker.exe strings apply ".\input\input.exe" ".\local\input.strings.json" ".\output\edited.exe"
+.\Unpacker.exe strings ".\local\input.exe"
+.\Unpacker.exe strings apply ".\local\input.exe"
 # Or replace the original and keep a .bak backup
-.\Unpacker.exe strings apply ".\input\input.exe" ".\local\input.strings.json" --in-place
+.\Unpacker.exe apply ".\local\input.exe" --in-place
 ```
 
-Edit only the `text` fields. You can remove entries you do not want to change. The catalog is bound to the exported binary; export again before editing a modified file. Keep the decrypted catalog local.
+Export and apply use `input.exe.strings.json` beside the input by default; you can also specify a catalog path. Apply writes `input.edited.exe` unless you select another output or use `--in-place`. Edit only the `text` fields. You can remove entries you do not want to change. The catalog is bound to the exported binary; export again before editing a modified file. Keep the decrypted catalog local.
 
-Supports statically identifiable embedded string tables in managed PE files. The editor does not run the target, change IL, or move records. Replacement text must fit the original ciphertext slot after encoding or compression. The editor decrypts the result to verify it and writes no partial output. Editing invalidates existing digital signatures; the tool does not re-sign files.
+Supports statically identifiable embedded string tables in managed PE files. The editor does not run or unpack the target. It can shorten, clear, or lengthen strings. If an edit does not fit the original slot, the editor rebuilds the resource and adds an offset map to the original decoder, preserving string IDs and call sites. Each encoded replacement is limited to 1 MiB. The editor verifies by decrypting the result and writes no partial output. Editing invalidates existing digital signatures.
 
 ## Options and exit codes
 
