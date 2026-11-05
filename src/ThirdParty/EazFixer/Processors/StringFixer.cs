@@ -90,7 +90,7 @@ namespace EazFixer.Processors
                 " unresolved and " + constructors + " VM constructor-name call(s). Runtime types preserved.";
         }
 
-        private static HashSet<Instruction> GetBoundaries(CilBody body)
+        internal static HashSet<Instruction> GetBoundaries(CilBody body)
         {
             var targets = new HashSet<Instruction>();
             foreach (var instruction in body.Instructions)

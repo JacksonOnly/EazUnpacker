@@ -20,13 +20,18 @@ namespace EazFixer
                 .Select(item => item.GetLocal(body.Variables)).Where(item => item != null));
         }
         internal int? Top => _stack.Count == 0 ? null : _stack[_stack.Count - 1];
+        internal void SetConstant(Local local, int value)
+        {
+            if (!_addressTaken.Contains(local)) _locals[local] = value;
+        }
+        internal void DiscardTop() => Pop();
         internal void Reset() { _stack.Clear(); _locals.Clear(); }
         private int? Pop()
         {
             if (_stack.Count == 0) return null;
             var value = _stack[_stack.Count - 1]; _stack.RemoveAt(_stack.Count - 1); return value;
         }
-        internal void Step(Instruction instruction, CilBody body)
+        internal void Step(Instruction instruction, CilBody body, bool resetOnTransfer = true)
         {
             if (instruction.IsLdcI4()) { _stack.Add(instruction.GetLdcI4Value()); return; }
             if (instruction.IsLdloc())
@@ -63,8 +68,8 @@ namespace EazFixer
             if (pops < 0 || pops > _stack.Count) _stack.Clear();
             else if (pops > 0) _stack.RemoveRange(_stack.Count - pops, pops);
             for (int index = 0; index < pushes; index++) _stack.Add(null);
-            if (instruction.OpCode.FlowControl == FlowControl.Branch || instruction.OpCode.FlowControl == FlowControl.Cond_Branch ||
-                instruction.OpCode.FlowControl == FlowControl.Return || instruction.OpCode.FlowControl == FlowControl.Throw) Reset();
+            if (resetOnTransfer && (instruction.OpCode.FlowControl == FlowControl.Branch || instruction.OpCode.FlowControl == FlowControl.Cond_Branch ||
+                instruction.OpCode.FlowControl == FlowControl.Return || instruction.OpCode.FlowControl == FlowControl.Throw)) Reset();
         }
         private void Convert(Func<int, int> convert)
         {
