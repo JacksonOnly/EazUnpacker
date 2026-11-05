@@ -19,7 +19,7 @@ namespace EazFixer.Processors
             if (!Flags.ResResolverTok.IsNull)
                 _resourceResolver = Ctx.Module.ResolveToken(Flags.ResResolverTok) as TypeDef ?? throw new Exception("ResourceResolver token set but token not found");
             else
-                _resourceResolver = Ctx.Module.GetTypes().SingleOrDefault(CanBeResourceResolver) ?? throw new ProtectionNotFoundException("No resource resolver event registration found");
+                _resourceResolver = Ctx.Module.GetTypes().Where(type => !type.IsGlobalModuleType).SingleOrDefault(CanBeResourceResolver) ?? throw new ProtectionNotFoundException("No resource resolver event registration found");
             if (!Flags.ResInitTok.IsNull)
                 _initMethod = Ctx.Module.ResolveToken(Flags.ResInitTok) as MethodDef ?? throw new Exception("InitMethod token set but method not found");
             else

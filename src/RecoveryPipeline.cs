@@ -48,9 +48,27 @@ internal static class RecoveryPipeline
                 result.Output = target; result.After = result.Before; result.Status = "analyzed";
                 result.Stages.Add(new StageResult { Name = "Inspection", Status = "success", Detail = "Static metadata inspection." }); return 0;
             }
+            int startupBodies=StartupBodyRestore.Process(target);
+            if(startupBodies>0)
+            {
+                result.Stages.Add(new StageResult { Name="StartupIL", Status="success", Changes=startupBodies,
+                    Detail="Restored verified IL from the startup patch table and removed only its consumed initialization call." });
+                ProgressEvents.Send(1,"info","已恢复启动期加密 IL："+startupBodies+" 个方法体");
+            }
+            int moduleResources=ModuleResourceRestore.Process(target);
+            if(moduleResources>0)
+            {
+                result.Stages.Add(new StageResult { Name="ModuleResources", Status="success", Changes=moduleResources,
+                    Detail="Expanded a verified resource-only payload from the module resolver. Original resolver and payload retained." });
+                ProgressEvents.Send(2,"info","已恢复启动期嵌入资源："+moduleResources+" 项");
+            }
             int costuraDependencies = CosturaDependencies.Extract(target, Path.GetDirectoryName(target)!);
             if (costuraDependencies > 0) result.Stages.Add(new StageResult { Name = "CosturaDependencies", Status = "success",
                 Changes = costuraDependencies, Detail = "Materialized identity-checked embedded managed dependencies; original resources and initializer retained; see input/costura-dependencies.json." });
+            int rawDependencies=CosturaDependencies.ExtractRawManaged(target,Path.GetDirectoryName(target)!);
+            if(rawDependencies>0)
+                result.Stages.Add(new StageResult { Name="EmbeddedManagedDependencies", Status="success", Changes=rawDependencies,
+                    Detail="Materialized embedded managed references matching the input's dependency graph. Original resources retained." });
             using var extractedDependencyScope = new DependencyLoadScope(input, target);
             string cleaned = Path.Combine(dir, Path.GetFileNameWithoutExtension(target) + "-clean" + Path.GetExtension(target));
             ProgressEvents.Send(2,"start","恢复字符串、资源并整理控制流");
