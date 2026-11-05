@@ -2,7 +2,7 @@
 
 面向 **Eazfuscator.NET 托管程序集**的命令行解包与反混淆工具。恢复可分析的 IL，生成可读名称，并可选导出 C# 工程。
 
-**简体中文** · [English](README.en.md) · **v1.4.0** · [更新日志](CHANGELOG.md)
+**简体中文** · [English](README.en.md) · **v1.4.1** · [更新日志](CHANGELOG.md)
 
 [快速开始](#快速开始) · [功能特点](#主要功能) · [字符串编辑](#原位编辑加密字符串) · [参数](#参数与退出码) · [开发](#开发与构建)
 
@@ -26,7 +26,7 @@
 
 ### 1. 解压完整发布包
 
-解压 `EazUnpacker-v1.4.0-win.zip`，保留 `worker\modern` 等所有子目录。入口为 `Unpacker.exe`，不要只复制 EXE。
+解压 `EazUnpacker-v1.4.1-win.zip`，保留 `worker\modern` 等所有子目录。入口为 `Unpacker.exe`，不要只复制 EXE。
 
 - **运行环境**：Windows、.NET Framework 4.8；处理现代 .NET 目标还需要相应的 .NET Desktop Runtime。现代后端以 .NET 8 为目标，可向已安装的更新主版本滚动。
 - **目录权限**：解压到较短的可写目录，程序会在自身目录建立 `temp`。Framework 加载器或第三方工具仍可能受 Windows 长路径限制。
