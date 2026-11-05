@@ -5,6 +5,7 @@ using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.CSharp.Transforms;
 using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.DebugInfo;
+using ICSharpCode.Decompiler.Semantics;
 using ICSharpCode.Decompiler.TypeSystem;
 
 namespace Unpacker;
@@ -13,6 +14,7 @@ internal sealed class RecoveredProjectDecompiler : WholeProjectDecompiler
 {
     private readonly SourceDataPlan data;
     private readonly ReadabilityStats stats;
+    internal SourceTypeAliases TypeAliases { get; }=new();
     internal RecoveredProjectDecompiler(DecompilerSettings settings,IAssemblyResolver resolver,IDebugInfoProvider? debugInfo,SourceDataPlan data,ReadabilityStats stats)
         :base(settings,resolver,null,null,debugInfo) { this.data=data;this.stats=stats; }
 
@@ -23,9 +25,49 @@ internal sealed class RecoveredProjectDecompiler : WholeProjectDecompiler
         decompiler.AstTransforms.Add(new ExceptionCompatibility());
         decompiler.AstTransforms.Add(new MetadataCompatibility());
         decompiler.AstTransforms.Add(new LocalInitializationCompatibility());
+        decompiler.AstTransforms.Add(new SourceMemberCompatibility());
+        decompiler.AstTransforms.Add(TypeAliases.For(types));
         decompiler.AstTransforms.Add(new SourceDataCompatibility(data));
         decompiler.AstTransforms.Add(new SeparateAsyncCompatibility(stats));
         return decompiler;
+    }
+}
+
+internal sealed class SourceMemberCompatibility : DepthFirstAstVisitor,IAstTransform
+{
+    public void Run(AstNode root,TransformContext context)=>root.AcceptVisitor(this);
+
+    public override void VisitInvocationExpression(InvocationExpression invocation)
+    {
+        base.VisitInvocationExpression(invocation);
+        if(invocation.Target is not MemberReferenceExpression {Target:CastExpression {Expression:ThisReferenceExpression} cast} member ||
+            invocation.GetResolveResult() is not CSharpInvocationResolveResult call ||
+            !invocation.Annotations.OfType<ICSharpCode.Decompiler.IL.Call>().Any() ||
+            call.Member.Accessibility is not (Accessibility.Protected or Accessibility.ProtectedOrInternal or Accessibility.ProtectedAndInternal))
+            return;
+        var declaringType=call.Member.DeclaringType;
+        if(!Equals(declaringType,cast.Type.GetResolveResult().Type))return;
+        member.Target=new BaseReferenceExpression();
+    }
+
+    public override void VisitObjectCreateExpression(ObjectCreateExpression creation)
+    {
+        base.VisitObjectCreateExpression(creation);
+        if(creation.Type is not SimpleType ||
+            creation.GetResolveResult().Type.GetDefinition() is not {Namespace:"",DeclaringType:null} definition)
+            return;
+        // A nested type inherited from the containing class can shadow a
+        // global-namespace constructor's name in generated C#.
+        creation.Type=new TypeSystemAstBuilder {AlwaysUseGlobal=true}.ConvertType(creation.GetResolveResult().Type);
+    }
+
+    public override void VisitFieldDeclaration(FieldDeclaration field)
+    {
+        base.VisitFieldDeclaration(field);
+        if(field.ReturnType is not SimpleType ||
+            field.ReturnType.GetResolveResult().Type.GetDefinition() is not {Namespace:"",DeclaringType:null})
+            return;
+        field.ReturnType=new TypeSystemAstBuilder {AlwaysUseGlobal=true}.ConvertType(field.ReturnType.GetResolveResult().Type);
     }
 }
 
@@ -344,5 +386,5 @@ internal sealed class ExceptionCompatibility : DepthFirstAstVisitor,IAstTransfor
         if(first is null)clause.Body.Statements.Add(declaration);else clause.Body.Statements.InsertBefore(first,declaration);
     }
 
-    internal const string HelperSource="using System;\nusing System.Reflection;\nusing System.Runtime.CompilerServices;\ninternal static class UnpackExceptionCompatibility\n{\n    private static readonly ConstructorInfo Constructor = typeof(RuntimeWrappedException).GetConstructor(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, null, new[] { typeof(object) }, null);\n    internal static Exception ToException(object value) => value as Exception ?? (value == null ? null : (Exception)Constructor.Invoke(new[] { value }));\n    internal static object Unwrap(Exception value) => value is RuntimeWrappedException wrapped ? wrapped.WrappedException : (object)value;\n}\n";
+    internal const string HelperSource="internal static class UnpackExceptionCompatibility\n{\n    private static readonly global::System.Reflection.ConstructorInfo Constructor = typeof(global::System.Runtime.CompilerServices.RuntimeWrappedException).GetConstructor(global::System.Reflection.BindingFlags.Public | global::System.Reflection.BindingFlags.NonPublic | global::System.Reflection.BindingFlags.Instance, null, new[] { typeof(object) }, null);\n    internal static global::System.Exception ToException(object value) => value as global::System.Exception ?? (value == null ? null : (global::System.Exception)Constructor.Invoke(new[] { value }));\n    internal static object Unwrap(global::System.Exception value) => value is global::System.Runtime.CompilerServices.RuntimeWrappedException wrapped ? wrapped.WrappedException : (object)value;\n}\n";
 }

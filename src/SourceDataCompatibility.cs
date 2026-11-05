@@ -15,9 +15,9 @@ internal sealed class SourceDataPlan
     internal readonly HashSet<int> EmptyInitializers = new();
     internal readonly ConcurrentDictionary<int, byte> Exported = new();
 
-    internal SourceDataPlan(string assembly)
+    internal SourceDataPlan(string assembly,byte[]? projection=null)
     {
-        using var module=dnlib.DotNet.ModuleDefMD.Load(assembly);
+        using var module=projection==null?dnlib.DotNet.ModuleDefMD.Load(assembly):dnlib.DotNet.ModuleDefMD.Load(projection);
         foreach(var type in module.GetTypes())
         {
             foreach(var field in type.Fields.Where(f=>f.HasFieldRVA && f.InitialValue?.Length>0))

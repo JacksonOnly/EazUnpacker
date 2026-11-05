@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using ICSharpCode.Decompiler.CSharp;
+using ICSharpCode.Decompiler.CSharp.OutputVisitor;
 using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.CSharp.Transforms;
 using Newtonsoft.Json;
@@ -116,8 +117,12 @@ internal sealed class SeparateAsyncCompatibility : IAstTransform
             foreach(var state in states)compatibility.Members.Add(state.Detach());
             foreach(var wrapper in wrappers)compatibility.Members.Add(wrapper.Detach());
             var extra=new SyntaxTree();
-            foreach(var item in tree.Members.Where(n=>n is UsingDeclaration or UsingAliasDeclaration))extra.Members.Add(item.Clone());
+            foreach(var item in tree.Members.Where(n=>n is ExternAliasDeclaration or UsingDeclaration or UsingAliasDeclaration))
+                extra.Members.Add(item.Clone());
             extra.Members.Add(compatibility);
+            // This separate tree bypasses the decompiler's final output pass.
+            // Reinsert precedence parentheses before serializing it ourselves.
+            extra.AcceptVisitor(new InsertParenthesesVisitor());
             string file=owner.Name+".RecoveredAsyncStateMachines.cs";
             if(!stats.ExtraFiles.TryAdd(file,"// Original recovered state-machine compatibility definitions.\n// Read/edit async business methods in "+owner.Name+".cs.\n"+extra))
                 throw new IOException("Generated state-machine source collision: "+file);

@@ -1,5 +1,8 @@
 using System.Threading;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
+using XmlConvert = System.Xml.XmlConvert;
+using XmlException = System.Xml.XmlException;
 using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.CSharp.ProjectDecompiler;
 using ICSharpCode.Decompiler.Metadata;
@@ -13,15 +16,18 @@ internal static class SourceCompiler
     {
         assembly=Path.GetFullPath(assembly);output=Path.GetFullPath(output);
         Directory.CreateDirectory(output);
-        using var pe=new PEFile(assembly);
-        var resolver=new UniversalAssemblyResolver(assembly,false,pe.DetectTargetFrameworkId());
         var searchDirectories=DependencyDirectories(assembly,originalInput);
+        var projection=SourceModuleProjection.Prepare(assembly);
+        using var pe=projection==null?new PEFile(assembly):new PEFile(assembly,new MemoryStream(projection,false));
+        var resolver=new UniversalAssemblyResolver(assembly,false,pe.DetectTargetFrameworkId());
         foreach(string directory in searchDirectories)resolver.AddSearchDirectory(directory);
         var settings=new DecompilerSettings {UseSdkStyleProjectFormat=true,UseDebugSymbols=true,
             ThrowOnAssemblyResolveErrors=false,RemoveDeadCode=true,RemoveDeadStores=true,AsyncAwait=true,YieldReturn=false,
-            AnonymousMethods=false,LocalFunctions=false,InitAccessors=false,NamedArguments=false,NonTrailingNamedArguments=false,OptionalArguments=false};
+            AnonymousMethods=false,LocalFunctions=false,InitAccessors=false,NamedArguments=false,NonTrailingNamedArguments=false,
+            OptionalArguments=false,UsingDeclarations=false,UseEnhancedUsing=false,NullPropagation=false,
+            Dynamic=false,UsePrimaryConstructorSyntax=false,UsePrimaryConstructorSyntaxForNonRecordTypes=false};
         var pdb=Path.ChangeExtension(assembly,".pdb");
-        var data=new SourceDataPlan(assembly);
+        var data=new SourceDataPlan(assembly,projection);
         var readability=new ReadabilityStats();
         var decompiler=new RecoveredProjectDecompiler(settings,resolver,File.Exists(pdb)?new RecoveredDebugInfo(pdb):null,data,readability){MaxDegreeOfParallelism=4};
         decompiler.ProgressIndicator=new DecompilerProgress();
@@ -39,7 +45,7 @@ internal static class SourceCompiler
         ProgressEvents.Send(6,"info","导出原始资源、引用依赖与模块初始化器");
         File.WriteAllText(Path.Combine(output,"UnpackExceptionCompatibility.cs"),ExceptionCompatibility.HelperSource);
         File.WriteAllText(Path.Combine(output,"UnpackMetadataCompatibility.cs"),MetadataCompatibility.HelperSource);
-        var xml=XDocument.Load(project);
+        var xml=ReadProject(project);
         var properties=new XElement("PropertyGroup",new XElement("LangVersion","latest"),new XElement("GenerateAssemblyInfo","false"),
             new XElement("GenerateTargetFrameworkAttribute","false"),new XElement("EnableDefaultCompileItems","true"),
             new XElement("EnableDefaultEmbeddedResourceItems","false"),new XElement("EnableDefaultPageItems","false"),new XElement("EnableDefaultApplicationDefinition","false"),new XElement("AllowUnsafeBlocks","true"),new XElement("Nullable","disable"),
@@ -62,7 +68,7 @@ internal static class SourceCompiler
         var resourceItems=new XElement("ItemGroup");xml.Root.Add(resourceItems);
         var resourceMap=new List<object>();
         var resourceNames=new List<object>();
-        using(var module=dnlib.DotNet.ModuleDefMD.Load(assembly))
+        using(var module=projection==null?dnlib.DotNet.ModuleDefMD.Load(assembly):dnlib.DotNet.ModuleDefMD.Load(projection))
         {
             string resourceDirectory="UnpackOriginalResources";
             while(Directory.Exists(Path.Combine(output,resourceDirectory)))resourceDirectory+="_";
@@ -75,7 +81,7 @@ internal static class SourceCompiler
                 string file=resourceDirectory+"/resource_"+(index++).ToString("D4")+".bin";
                 byte[] bytes=resource.CreateReader().ToArray();File.WriteAllBytes(Path.Combine(output,file),bytes);
                 string name=resource.Name.String;
-                if(string.IsNullOrWhiteSpace(name))
+                if(string.IsNullOrWhiteSpace(name) || !IsXmlNameValue(name))
                 {
                     string marker=SourceResourceNames.Marker(name,occupied);resourceNames.Add(new {Original=name,Placeholder=marker});name=marker;
                 }
@@ -91,7 +97,8 @@ internal static class SourceCompiler
             xml.Descendants("TargetFramework").First().Value="net48";
             xml.Root.Add(new XElement("ItemGroup",new XElement("PackageReference",new XAttribute("Include","System.Runtime.CompilerServices.Unsafe"),new XAttribute("Version","6.0.0"))));
         }
-        int initializerCalls=ExportModuleInitializer(assembly,output,xml.Descendants("TargetFramework").First().Value.StartsWith("net4"));
+        int initializerCalls=ExportModuleInitializer(assembly,projection,output,xml.Descendants("TargetFramework").First().Value.StartsWith("net4"));
+        var exportedReferences=new List<string>();
         foreach(var reference in xml.Descendants("Reference").ToArray())
         {
             string name=((string?)reference.Attribute("Include")??"").Split(',')[0];
@@ -99,11 +106,14 @@ internal static class SourceCompiler
             if(dependency==null && ((string?)reference.Element("HintPath"))?.IndexOf("dotnet\\shared\\",StringComparison.OrdinalIgnoreCase)>=0)
             {reference.Remove();continue;}
             if(dependency==null)continue;
+            exportedReferences.Add(dependency);
             string references=Path.Combine(output,"references");Directory.CreateDirectory(references);
             string fileName=Path.GetFileName(dependency);
             File.Copy(dependency,Path.Combine(references,fileName),true);
             reference.Elements("HintPath").Remove();reference.Add(new XElement("HintPath","references/"+fileName));
         }
+        decompiler.TypeAliases.ConfigureProject(xml);
+        AddFrameworkReferences(xml,searchDirectories,exportedReferences);
         if(xml.Descendants("TargetFramework").First().Value.StartsWith("net4")
             && (xml.Descendants("OutputType").FirstOrDefault()?.Value??"Library")!="Library")
         {
@@ -153,15 +163,87 @@ internal static class SourceCompiler
     internal static string[] DependencyDirectories(string assembly,string originalInput)
         =>DependencyLoadScope.DependencyDirectories(assembly,originalInput);
 
+    private static XDocument ReadProject(string project)
+    {
+        string xml=File.ReadAllText(project);
+        try{return XDocument.Parse(xml);}
+        catch(XmlException)
+        {
+            // ILSpy can serialize an opaque manifest resource name directly
+            // into an XML attribute. Those generated items will be replaced
+            // by explicit binary resources from the source PE anyway.
+            string withoutResources=Regex.Replace(xml,
+                @"(?ms)^[ \t]*<(?<item>EmbeddedResource|Resource|Page|ApplicationDefinition)\b[^>]*?(?:/>|>.*?</\k<item>\s*>)","");
+            if(withoutResources==xml)throw;
+            return XDocument.Parse(withoutResources);
+        }
+    }
+
+    private static bool IsXmlNameValue(string value)
+    {
+        try{XmlConvert.VerifyXmlChars(value);return true;}
+        catch(XmlException){return false;}
+    }
+
+    private static void AddFrameworkReferences(XDocument project,string[] searchDirectories,IEnumerable<string> roots)
+    {
+        string tfm=project.Descendants("TargetFramework").First().Value;
+        if(!tfm.StartsWith("net4",StringComparison.Ordinal) || tfm.Length is <5 or >6 ||
+            !tfm.Skip(3).All(char.IsDigit))return;
+        string version="v"+string.Join(".",tfm.Skip(3));
+        string directory=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+            "Reference Assemblies","Microsoft","Framework",".NETFramework",version);
+        if(!Directory.Exists(directory))return;
+
+        var references=new HashSet<string>(project.Descendants("Reference")
+            .Select(r=>((string?)r.Attribute("Include")??"").Split(',')[0]),StringComparer.OrdinalIgnoreCase);
+        references.UnionWith(new[]{"mscorlib","System","System.Core","Microsoft.CSharp","System.Data","System.Xml",
+            "System.Xml.Linq","System.Numerics","System.Runtime.Serialization"});
+        var visited=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var queue=new Queue<string>(roots);
+        var additions=new XElement("ItemGroup");
+        while(queue.Count>0)
+        {
+            string path=queue.Dequeue();
+            if(!visited.Add(path))continue;
+            using var module=dnlib.DotNet.ModuleDefMD.Load(path);
+            foreach(var reference in module.GetAssemblyRefs())
+            {
+                string name=reference.Name.String;
+                if(string.IsNullOrEmpty(name) || Path.GetFileName(name)!=name)continue;
+                var identity=new System.Reflection.AssemblyName(reference.FullName);
+                string framework=Path.Combine(directory,name+".dll");
+                if(Matches(framework,identity))
+                {
+                    if(references.Add(name))additions.Add(new XElement("Reference",new XAttribute("Include",name)));
+                    continue;
+                }
+                foreach(string dependencyDirectory in searchDirectories)
+                {
+                    string local=Path.Combine(dependencyDirectory,name+".dll");
+                    if(Matches(local,identity)){queue.Enqueue(local);break;}
+                }
+            }
+        }
+        if(additions.HasElements)project.Root!.Add(additions);
+
+        static bool Matches(string path,System.Reflection.AssemblyName identity)
+        {
+            if(!File.Exists(path))return false;
+            try{return DependencyLoadScope.MatchesIdentity(identity,System.Reflection.AssemblyName.GetAssemblyName(path),false);}
+            catch(BadImageFormatException){return false;}
+        }
+    }
+
     private sealed class DecompilerProgress : IProgress<DecompilationProgress>
     {
         private readonly ProgressEvents.Counter counter=new(6);
         public void Report(DecompilationProgress value)=>counter.Report("源码导出"+(string.IsNullOrEmpty(value.Status)?"":"："+value.Status),value.UnitsCompleted,value.TotalUnits);
     }
 
-    private static int ExportModuleInitializer(string assembly,string output,bool framework)
+    private static int ExportModuleInitializer(string assembly,byte[]? projection,string output,bool framework)
     {
-        using var module=dnlib.DotNet.ModuleDefMD.Load(assembly);
+        using var module=projection==null?dnlib.DotNet.ModuleDefMD.Load(assembly):dnlib.DotNet.ModuleDefMD.Load(projection);
         var global=module.GlobalType;
         if(global==null)return 0;
         if(global.Fields.Count!=0 || global.Methods.Any(m=>!m.IsStaticConstructor))
