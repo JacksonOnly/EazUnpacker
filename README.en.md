@@ -4,7 +4,7 @@ A command-line unpacker and deobfuscator for **Eazfuscator.NET managed assemblie
 
 [简体中文](README.md) · **English** · **v1.2.1** · [Changelog](CHANGELOG.md)
 
-[Quick start](#quick-start) · [Features](#features) · [Options](#options-and-exit-codes) · [Development](#development-and-build)
+[Quick start](#quick-start) · [Features](#features) · [String editing](#edit-encrypted-strings-in-place) · [Options](#options-and-exit-codes) · [Development](#development-and-build)
 
 > Recovery uses metadata and IL semantics. Supported protections depend on the recovery report; arbitrary assemblies are not guaranteed to be fully restored.
 
@@ -12,7 +12,7 @@ A command-line unpacker and deobfuscator for **Eazfuscator.NET managed assemblie
 
 | Area | Capabilities |
 | --- | --- |
-| Strings and resources | Recover supported strings, resources and embedded assemblies; extract identity-checked Costura managed dependencies |
+| Strings and resources | Recover supported strings, resources and embedded assemblies; edit Eaz encrypted strings without unpacking; extract identity-checked Costura managed dependencies |
 | Devirtualization | Discover VM formats and call sites; recover supported instructions, signatures and exception regions; retain originals on failure |
 | Inlining and proxies | Recover multiple VM sites per host; support constrained `ref` write-back; bypass transparent proxy chains and inline bounded, pure integer leaves |
 | Control flow | Fold proven integer/enum predicates, simplify switch dispatch and jump chains, propagate constants across unique predecessors, remove unreachable IL and unused local stores |
@@ -54,6 +54,19 @@ Open PowerShell in the extracted directory:
 The console reports the output file, diagnostic directory and final counts. Check the exit code first, then inspect `result.json` in that run's directory. A check that did not run has not passed.
 
 Input and output must differ. Available recovered assemblies are published even when later stages are incomplete; reports retain the partial status. Deploy generated Framework EXE `.config` files alongside their EXEs. DLLs remain dependent on their host and dependencies.
+
+## Edit encrypted strings in place
+
+```powershell
+.\Unpacker.exe strings export ".\input\input.exe" ".\local\input.strings.json"
+.\Unpacker.exe strings apply ".\input\input.exe" ".\local\input.strings.json" ".\output\edited.exe"
+# Or replace the original and keep a .bak backup
+.\Unpacker.exe strings apply ".\input\input.exe" ".\local\input.strings.json" --in-place
+```
+
+Edit only the `text` fields. You can remove entries you do not want to change. The catalog is bound to the exported binary; export again before editing a modified file. Keep the decrypted catalog local.
+
+Supports statically identifiable embedded string tables in managed PE files. The editor does not run the target, change IL, or move records. Replacement text must fit the original ciphertext slot after encoding or compression. The editor decrypts the result to verify it and writes no partial output. Editing invalidates existing digital signatures; the tool does not re-sign files.
 
 ## Options and exit codes
 

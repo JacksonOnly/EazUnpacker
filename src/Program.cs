@@ -6,12 +6,13 @@ namespace Unpacker;
 
 internal static class Program
 {
-    private const string Usage="用法：Unpacker unpack <输入EXE/DLL> <输出文件> [--export-source] [--validate-clr]\n      Unpacker analyzer <输入EXE/DLL>\n默认不检查 CLR；--validate-clr 显式开启；--export-source 导出并重构建 C# 工程。";
+    private const string Usage="用法：Unpacker unpack <输入EXE/DLL> <输出文件> [--export-source] [--validate-clr]\n      Unpacker analyzer <输入EXE/DLL>\n      Unpacker strings <export|apply> ...\n默认不检查 CLR；--validate-clr 显式开启；--export-source 导出并重构建 C# 工程。";
 
     [STAThread]
     private static int Main(string[] args)
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
+        if (args.Length > 0 && args[0] == "strings") return StringResourceCommand.Run(args);
         CliProgress? progress=null;
         try
         {

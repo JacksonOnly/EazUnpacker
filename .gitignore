@@ -62,6 +62,7 @@ temp/
 *.binlog
 *.sarif
 *.jsonl
+*.strings.json
 result.json
 latest.json
 progress.json
