@@ -1,7 +1,7 @@
 #requires -Version 7.0
 [CmdletBinding()]
 param(
-    [string]$Version='1.2.1',
+    [string]$Version='1.3.0',
     [string]$Ref='HEAD',
     [string]$OutputDirectory=(Join-Path $PSScriptRoot '..\artifacts\releases')
 )
