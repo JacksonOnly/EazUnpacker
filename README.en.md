@@ -12,7 +12,7 @@ A command-line unpacker and deobfuscator for **Eazfuscator.NET managed assemblie
 
 | Area | Capabilities |
 | --- | --- |
-| Strings and resources | Recover supported strings, resources and embedded assemblies; edit Eaz encrypted strings without unpacking; extract identity-checked Costura managed dependencies |
+| Strings and resources | Recover supported strings and resources; export identity-checked embedded dependencies beside the output using assembly names; edit Eaz encrypted strings without unpacking |
 | Devirtualization | Discover VM formats and call sites; recover supported instructions, signatures and exception regions; retain originals on failure |
 | Inlining and proxies | Recover multiple VM sites per host; support constrained `ref` write-back; bypass transparent proxy chains and inline bounded, pure integer leaves |
 | Control flow | Fold proven integer/enum predicates, simplify switch dispatch and jump chains, propagate constants across unique predecessors, remove unreachable IL and unused local stores |
@@ -20,6 +20,7 @@ A command-line unpacker and deobfuscator for **Eazfuscator.NET managed assemblie
 | Key reporting | Log verified keys with tokens and input namespace/type/method identities; retain structured records |
 | Optional source export | Export a C# project and string index with ILSpy, then attempt a rebuild |
 | Optional CLR validation | Prepare recovered hosts, inline adapters and access bridges; **disabled by default** |
+| Protection cleanup | After full VM recovery or when no VM is detected, remove unreferenced VM/decoder code and replaced resources; retain referenced or unproven content |
 
 ## Quick start
 
@@ -54,6 +55,8 @@ Open PowerShell in the extracted directory:
 The console reports the output file, diagnostic directory and final counts. Check the exit code first, then inspect `result.json` in that run's directory. A check that did not run has not passed.
 
 Input and output must differ. Available recovered assemblies are published even when later stages are incomplete; reports retain the partial status. Deploy generated Framework EXE `.config` files alongside their EXEs. DLLs remain dependent on their host and dependencies.
+
+Embedded managed dependencies are named from their assembly identities, not obfuscated resource names. Dependencies are placed before the main output; conflicting existing files stop publication without being overwritten. Only resources replaced by external files and protection code with no business references are removed. Unrestored VM code and unknown dynamic loaders remain intact.
 
 ## Edit encrypted strings in place
 

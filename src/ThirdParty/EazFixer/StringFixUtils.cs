@@ -16,6 +16,22 @@ namespace EazFixer
         public static IEnumerable<MethodDef> FindStringDecryptMethods(ModuleDef module) =>
             Utils.GetMethodsRecursive(module).Where(CanBeStringMethod);
 
+        public static string FindDecoderResource(MethodDef wrapper)
+        {
+            if (!wrapper.HasBody) return null;
+            var cores = wrapper.Body.Instructions.Where(i => i.OpCode.Code == Code.Call)
+                .Select(i => (i.Operand as IMethod)?.ResolveMethodDef())
+                .Where(m => m != null && m.DeclaringType == wrapper.DeclaringType && m.HasBody && m.IsStatic &&
+                    m.MethodSig?.RetType.ElementType == ElementType.String && m.MethodSig.Params.Count == 2 &&
+                    m.MethodSig.Params[0].ElementType == ElementType.I4 && m.MethodSig.Params[1].ElementType == ElementType.Boolean &&
+                    m.Body.Instructions.Any(i => i.Operand is IMethod called && called.Name == "GetManifestResourceStream" &&
+                        called.DeclaringType.FullName == "System.Reflection.Assembly"))
+                .Distinct().ToArray();
+            if (cores.Length != 1) return null;
+            try { return StringResourceLayout.Detect(cores[0]).ResourceName; }
+            catch (StringResourceException) { return null; }
+        }
+
         private static bool CanBeStringMethod(MethodDef method)
         {
             // Visibility is not stable across protection versions.

@@ -55,17 +55,17 @@ internal static class RecoveryPipeline
                     Detail="Restored verified IL from the startup patch table and removed only its consumed initialization call." });
                 ProgressEvents.Send(1,"info","已恢复启动期加密 IL："+startupBodies+" 个方法体");
             }
-            int moduleResources=ModuleResourceRestore.Process(target);
+            int moduleResources=ModuleResourceRestore.Process(target,out var carrier);
             if(moduleResources>0)
             {
                 result.Stages.Add(new StageResult { Name="ModuleResources", Status="success", Changes=moduleResources,
                     Detail="Expanded a verified resource-only payload from the module resolver. Original resolver and payload retained." });
                 ProgressEvents.Send(2,"info","已恢复启动期嵌入资源："+moduleResources+" 项");
             }
-            int costuraDependencies = CosturaDependencies.Extract(target, Path.GetDirectoryName(target)!);
+            int costuraDependencies = CosturaDependencies.Extract(target, Path.GetDirectoryName(target)!,result.EmbeddedAssemblies);
             if (costuraDependencies > 0) result.Stages.Add(new StageResult { Name = "CosturaDependencies", Status = "success",
                 Changes = costuraDependencies, Detail = "Materialized identity-checked embedded managed dependencies; original resources and initializer retained; see input/costura-dependencies.json." });
-            int rawDependencies=CosturaDependencies.ExtractRawManaged(target,Path.GetDirectoryName(target)!);
+            int rawDependencies=CosturaDependencies.ExtractRawManaged(target,Path.GetDirectoryName(target)!,result.EmbeddedAssemblies);
             if(rawDependencies>0)
                 result.Stages.Add(new StageResult { Name="EmbeddedManagedDependencies", Status="success", Changes=rawDependencies,
                     Detail="Materialized embedded managed references matching the input's dependency graph. Original resources retained." });
@@ -96,7 +96,11 @@ internal static class RecoveryPipeline
             }
             else
             {
-                foreach (var stage in FixerBridge.Process(target, cleaned,false,(name,state,count)=>ProgressEvents.Backend(2,name,state,count))) result.Stages.Add(new StageResult { Name = stage.Name, Status = stage.Status, Detail = stage.Detail, Changes = stage.Changes });
+                foreach (var stage in FixerBridge.Process(target, cleaned,false,(name,state,count)=>ProgressEvents.Backend(2,name,state,count)))
+                {
+                    result.Stages.Add(new StageResult { Name = stage.Name, Status = stage.Status, Detail = stage.Detail, Changes = stage.Changes });
+                    result.EmbeddedAssemblies.AddRange(stage.Exports);
+                }
             }
             if (!File.Exists(cleaned)) File.Copy(target, cleaned);
             foreach(var dependency in Directory.GetFiles(Path.GetDirectoryName(target)!,"*.dll").Where(f=>f!=target))
@@ -185,6 +189,33 @@ internal static class RecoveryPipeline
                 result.Stages.Add(new StageResult{Name="IntegrityCompatibility",Status="success",Changes=integrity,
                     Detail="Adapted identified self-signature guards invalidated by rewriting; other checks retained; see integrity-compatibility.json."});
             }
+            if((postStrings.VirtualizedMethods.Count==0 || result.Stages.Any(s=>s.Name=="VM" && s.Status=="success")) &&
+                AssemblyInspector.Inspect(cleaned).VirtualizedMethods.Count==0)
+            {
+                string pruned=Path.Combine(dir,"pruned"+Path.GetExtension(cleaned));
+                try
+                {
+                    var cleanup=ProtectionCleanupPass.Process(cleaned,pruned,target,result,carrier,startupBodies>0);
+                    if(cleanup.Changed)
+                    {
+                        if(File.Exists(cleaned+".config"))File.Copy(cleaned+".config",pruned+".config");
+                        cleaned=pruned;
+                        RememberOutput(result,cleaned,dir);
+                    }
+                    if(cleanup.Changed || cleanup.Retained>0)
+                    {
+                        string detail=$"已清理保护残留：{cleanup.Types} 个类型、{cleanup.Methods} 个方法、{cleanup.Resources} 项资源；仍有引用的保护入口 {cleanup.Retained} 个。";
+                        result.Stages.Add(new StageResult{Name="ProtectionCleanup",Status=cleanup.Retained==0?"success":"partial",
+                            Changes=cleanup.Types+cleanup.Methods+cleanup.Fields+cleanup.Resources,Detail=detail});
+                        ProgressEvents.Send(4,cleanup.Retained==0?"success":"warning",detail);
+                    }
+                }
+                catch(Exception ex)
+                {
+                    result.Stages.Add(new StageResult{Name="ProtectionCleanup",Status="partial",Detail=ex.ToString()});
+                    ProgressEvents.Send(4,"warning","残留清理未通过校验，保留清理前的恢复产物。");
+                }
+            }
             string named=Path.Combine(dir,Path.GetFileNameWithoutExtension(target)+"-recovered"+Path.GetExtension(target));
             int renamed=NameRecoveryPass.Process(cleaned,named,Path.Combine(dir,"rename-map.json"));
             string inlineReport=Path.Combine(dir,"inline-expressions.json");
@@ -224,7 +255,8 @@ internal static class RecoveryPipeline
                 }
             }
             string vmReport = Path.Combine(dir, "vm-methods.json");
-            if (validateClr && File.Exists(vmReport) && result.Stages.Any(s => s.Name == "VM" && s.Changes > 0))
+            int validationTargets=File.Exists(vmReport)?ClrValidator.ReadTargets(vmReport).Count:0;
+            if (validateClr && validationTargets>0 && result.Stages.Any(s => s.Name == "VM" && s.Changes > 0))
             {
                 string clrReport = Path.Combine(dir, "clr-validation.json");
                 ProgressEvents.Send(5,"start","隔离 CLR 准备检查（不调用业务方法）");
@@ -233,7 +265,7 @@ internal static class RecoveryPipeline
                     :Assembly.GetExecutingAssembly().Location;
                 int code = File.Exists(validator)?ProcessRunner.Run(validator,
                     new[] { "--validate-worker", cleaned, vmReport, clrReport,"5",input }, Path.Combine(dir, "clr-validation.log"), Math.Max(1, timeout / 4)):-1;
-                int expected=ClrValidator.ReadTargets(vmReport).Count;
+                int expected=validationTargets;
                 bool validated=code==0 && ClrValidator.HasCompleteReport(clrReport,expected);
                 result.Stages.Add(new StageResult { Name = "CLRValidation", Status = validated ? "success" : "failed",
                     Detail = "Expected "+expected+" recovered methods prepared by CLR in an isolated process; exit " + code + "; complete report: "+validated+"; see clr-validation.json/log. No business methods explicitly invoked; CLR may initialize helpers." });
