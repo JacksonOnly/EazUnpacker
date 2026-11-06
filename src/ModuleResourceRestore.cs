@@ -13,7 +13,7 @@ internal static class ModuleResourceRestore
         internal string Resource { get; }=resource;
     }
 
-    internal static int Process(string input,out Carrier? carrier)
+    internal static int Process(string input,out Carrier? carrier,bool preferExisting=false)
     {
         carrier=null;
         using var module=ModuleDefMD.Load(File.ReadAllBytes(input));
@@ -73,6 +73,7 @@ internal static class ModuleResourceRestore
             var existing=module.Resources.FirstOrDefault(r=>r.Name==item.Name);
             if(existing!=null)
             {
+                if(preferExisting && existing is EmbeddedResource)continue;
                 if(existing is not EmbeddedResource old || !Enumerable.SequenceEqual(old.CreateReader().ToArray(),payload))throw Invalid();
                 continue;
             }

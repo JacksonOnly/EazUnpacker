@@ -13,6 +13,13 @@ namespace EazFixer.Processors
         public List<Assembly> ResourceAssemblies = new List<Assembly>();
         private TypeDef _resourceResolver;
         private MethodDef _initMethod;
+        private readonly bool _preferExisting;
+        private HashSet<string> _originalNames;
+
+        internal ResourceResolver(bool preferExisting = false) { _preferExisting = preferExisting; }
+
+        internal static bool IsDetected(ModuleDef module) => module.GetTypes().Where(type => !type.IsGlobalModuleType)
+            .Any(type => CanBeResourceResolver(type) && type.Methods.Count(CanBeInitMethod) == 1);
 
         protected override void InitializeInternal()
         {
@@ -28,6 +35,7 @@ namespace EazFixer.Processors
 
         protected override void ProcessInternal()
         {
+            _originalNames = new HashSet<string>(Ctx.Module.Resources.Select(resource => resource.Name.String), StringComparer.Ordinal);
             var init = Utils.FindMethod(Ctx.Assembly, _initMethod, Type.EmptyTypes) ?? throw new Exception("Could not find init method through reflection");
             init.Invoke(null, null);
             var dictionaries = init.DeclaringType.GetFields(BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)
@@ -61,6 +69,10 @@ namespace EazFixer.Processors
                         using (var recovered = ModuleDefMD.Load(module))
                             foreach (var resource in recovered.Resources)
                             {
+                                // A resource editor can intentionally shadow a
+                                // protected payload with a direct manifest entry.
+                                if (_preferExisting && _originalNames.Contains(resource.Name.String))
+                                { duplicates++; continue; }
                                 if (TryAddRecoveredResource(Ctx.Module, resource, out var error)) extracted++;
                                 else if (error == null) duplicates++;
                                 else Warn(error);

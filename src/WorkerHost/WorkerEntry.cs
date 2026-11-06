@@ -22,6 +22,7 @@ internal static class WorkerEntry
             switch(args[0])
             {
                 case "pipeline": return RecoveryPipeline.Run(args);
+                case "--resources-worker": return ResourceRecoveryWorker.Run(args[1],args[2],args[3]);
                 case "--validate-worker": return ClrValidator.Run(args[1],args[2],args[3],args.Length>4?int.Parse(args[4]):5,args.Length>5?args[5]:null);
                 case "--vm-worker":
                 {

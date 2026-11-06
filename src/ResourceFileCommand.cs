@@ -38,14 +38,16 @@ internal static class ResourceFileCommand
             byte[] image=ReadBounded(input,ResourceFileEditor.MaxFileBytes);
             string fingerprint=Hash(image);
             bool container=Path.GetExtension(input).Equals(".resources",StringComparison.OrdinalIgnoreCase);
-            var editor=new ResourceFileEditor(image,container);
+            var editCatalog=export?null:ReadCatalog(catalog,container,fingerprint);
+            byte[] prepared=container?image:ResourceRecovery.Prepare(image,input);
+            var editor=new ResourceEditSession(prepared,container);
             if(export)
             {
-                Export(editor,catalog,files,fingerprint);
+                Export(editor,catalog,files);
                 Console.WriteLine($"[resources] 已导出 {editor.Assets.Count} 项；文件位于清单同名 .files 目录。");
                 return 0;
             }
-            var edits=ReadEdits(editor,catalog,files,fingerprint);
+            var edits=ReadEdits(editor,editCatalog!,files);
             byte[] patched=editor.Apply(edits,out int changes);
             if(changes==0){Console.WriteLine("[resources] 无改动，未写入文件。");return 0;}
             string? backup=inPlace?input+".bak":null;
@@ -64,7 +66,7 @@ internal static class ResourceFileCommand
         catch(Exception e){return Error("处理失败（"+e.GetType().Name+"）。");}
     }
 
-    private static void Export(ResourceFileEditor editor,string catalog,string files,string fingerprint)
+    private static void Export(ResourceEditSession editor,string catalog,string files)
     {
         if(File.Exists(files) || Directory.Exists(files))throw Invalid("资源导出目录已存在，请选择新清单路径。");
         string directory=Path.GetDirectoryName(catalog)!;Directory.CreateDirectory(directory);
@@ -74,20 +76,21 @@ internal static class ResourceFileCommand
         {
             Directory.CreateDirectory(temporary);
             var entries=new JArray();
+            var paths=ResourceExportPaths.Create(editor,files.Length>=temporary.Length?files:temporary);
             foreach(var asset in editor.Assets)
             {
-                // Neither manifest names nor container keys become disk paths.
-                string file=asset.Id+ExportExtension(asset);
-                File.WriteAllBytes(Path.Combine(temporary,file),asset.Data);
+                string file=paths[asset.Id];
+                string destination=Path.Combine(temporary,file.Replace('/',Path.DirectorySeparatorChar));
+                Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                File.WriteAllBytes(destination,asset.Data);
                 entries.Add(new JObject { ["id"]=asset.Id,["name"]=asset.Name,["type"]=asset.Type,["format"]=asset.Format,
-                    ["size"]=asset.Data.Length,["sha256"]=Hash(asset.Data),["file"]=file });
+                    ["file"]=file });
             }
-            Directory.Move(temporary,files);installed=true;
-            var root=new JObject { ["version"]=1,["kind"]=editor.IsContainer?"resources":"assembly",["sha256"]=fingerprint,["entries"]=entries };
+            InstallDirectory(temporary,files);installed=true;
             Publish(catalog,null,stream=>
             {
                 using var text=new StreamWriter(stream,ResourceFileEditor.Utf8,4096,true);
-                using var json=new JsonTextWriter(text) {Formatting=Formatting.Indented};root.WriteTo(json);json.Flush();
+                using var json=new JsonTextWriter(text) {Formatting=Formatting.Indented};entries.WriteTo(json);json.Flush();
             });
             complete=true;
         }
@@ -98,28 +101,55 @@ internal static class ResourceFileCommand
         }
     }
 
-    private static Dictionary<string,byte[]> ReadEdits(ResourceFileEditor editor,string catalog,string files,string fingerprint)
+    private static JArray ReadCatalog(string catalog,bool container,string fingerprint)
     {
         using var stream=new FileStream(catalog,FileMode.Open,FileAccess.Read,FileShare.Read);
         if(stream.Length>128*1024*1024)throw Invalid("资源清单超过大小限制。");
         using var text=new StreamReader(stream,ResourceFileEditor.Utf8,true);
         using var reader=new JsonTextReader(text) {MaxDepth=8,DateParseHandling=DateParseHandling.None};
-        var root=JObject.Load(reader,new JsonLoadSettings {DuplicatePropertyNameHandling=DuplicatePropertyNameHandling.Error});
-        if(reader.Read() || root["version"]?.Type!=JTokenType.Integer || (string?)root["version"]!="1" ||
-            root["kind"]?.Type!=JTokenType.String || (string?)root["kind"]!=(editor.IsContainer?"resources":"assembly") ||
-            root["sha256"]?.Type!=JTokenType.String || !string.Equals((string?)root["sha256"],fingerprint,StringComparison.OrdinalIgnoreCase) ||
-            root["entries"] is not JArray entries || entries.Count>ResourceFileEditor.MaxEntries)
-            throw Invalid("资源清单格式无效或与输入不匹配，请重新导出。");
+        var root=JToken.Load(reader,new JsonLoadSettings {DuplicatePropertyNameHandling=DuplicatePropertyNameHandling.Error});
+        if(reader.Read())throw Invalid("资源清单包含尾随数据。");
+        // Read previous catalogs as well, but new exports contain only the
+        // five user-requested mapping fields, with no size/hash settings.
+        if(root is JObject legacy)
+        {
+            if(legacy["sha256"]!=null && (legacy["sha256"]!.Type!=JTokenType.String ||
+                !string.Equals((string?)legacy["sha256"],fingerprint,StringComparison.OrdinalIgnoreCase)))
+                throw Invalid("旧资源清单与输入不匹配，请重新导出。");
+            if(legacy["kind"]!=null && (string?)legacy["kind"]!=(container?"resources":"assembly"))
+                throw Invalid("资源清单类型与输入不匹配。");
+            root=legacy["entries"]??throw Invalid("资源清单缺少条目。");
+        }
+        if(root is not JArray entries || entries.Count>ResourceFileEditor.MaxEntries)throw Invalid("资源清单格式或数量无效。");
+        return entries;
+    }
+
+    private static void InstallDirectory(string source,string destination)
+    {
+        // Indexers/antivirus can briefly hold newly-created resource files open
+        // on Windows. Retry only the same atomic rename, never overwrite a
+        // destination that appeared concurrently.
+        for(int attempt=0;;attempt++)
+        {
+            try {Directory.Move(source,destination);return;}
+            catch(IOException e) when(attempt<9 && (e.HResult&0xffff) is 5 or 32 or 33 &&
+                Directory.Exists(source) && !Directory.Exists(destination) && !File.Exists(destination))
+            {System.Threading.Thread.Sleep(50*(attempt+1));}
+        }
+    }
+
+    private static Dictionary<string,byte[]> ReadEdits(ResourceEditSession editor,JArray entries,string files)
+    {
         var originals=editor.Assets.ToDictionary(a=>a.Id,StringComparer.Ordinal);
         var edits=new Dictionary<string,byte[]>(StringComparer.Ordinal);long total=0;
         foreach(var item in entries)
         {
             if(item is not JObject entry || entry["id"]?.Type!=JTokenType.String || entry["name"]?.Type!=JTokenType.String ||
                 entry["type"]?.Type!=JTokenType.String || entry["format"]?.Type!=JTokenType.String ||
-                entry["size"]?.Type!=JTokenType.Integer || entry["sha256"]?.Type!=JTokenType.String || entry["file"]?.Type!=JTokenType.String ||
+                entry["file"]?.Type!=JTokenType.String ||
                 !originals.TryGetValue((string)entry["id"]!,out var asset) || edits.ContainsKey(asset.Id) ||
-                (string?)entry["name"]!=asset.Name || (string?)entry["type"]!=asset.Type || (string?)entry["format"]!=asset.Format ||
-                (long?)entry["size"]!=asset.Data.Length || !string.Equals((string?)entry["sha256"],Hash(asset.Data),StringComparison.OrdinalIgnoreCase))
+                ((string?)entry["name"]!=asset.Name && (editor.ContainerName(asset.Id) is not string parent || (string?)entry["name"]!=parent+"::"+asset.Name)) ||
+                (string?)entry["type"]!=asset.Type || (string?)entry["format"]!=asset.Format)
                 throw Invalid("资源条目身份无效、重复或被修改；只修改导出的文件，或删除不需要回写的条目。");
             string path=SafeFile(files,(string)entry["file"]!);
             byte[] replacement=ReadBounded(path,ResourceFileEditor.MaxAssetBytes);
@@ -155,15 +185,6 @@ internal static class ResourceFileCommand
             int read=stream.Read(bytes,position,bytes.Length-position);if(read==0)throw Invalid("文件在读取期间被截断。");position+=read;
         }
         return bytes;
-    }
-
-    private static string ExportExtension(ResourceFileEditor.Asset asset)
-    {
-        if(asset.Format=="utf8")return ".txt";
-        if(asset.Format=="binary")
-            foreach(string extension in new[]{".resources",".png",".jpg",".jpeg",".gif",".bmp",".ico",".svg",".xaml",".baml",".xml",".json",".txt",".wav",".mp3",".ttf",".otf"})
-                if(asset.Name.EndsWith(extension,StringComparison.OrdinalIgnoreCase))return extension;
-        return ".bin";
     }
 
     private static void Publish(string output,string? backup,Action<FileStream> write,string? expected=null)

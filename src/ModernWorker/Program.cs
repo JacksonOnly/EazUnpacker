@@ -15,6 +15,8 @@ internal static class Program
         AppContext.SetSwitch("System.Runtime.Serialization.EnableUnsafeBinaryFormatterSerialization",false);
         try {
             WorkCache.Initialize();
+            if(args.Length==4 && args[0]=="--resources-worker")
+                return WorkerDesktop.Run(args,a=>ResourceRecoveryWorker.Run(a[1],a[2],a[3]));
             if(args.Length>=4 && args[0]=="--vm-worker")
             {
                 using var vmDependencies=new DependencyLoadScope(args.Length>4?args[4]:args[1],args[1]);

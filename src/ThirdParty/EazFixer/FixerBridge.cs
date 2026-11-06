@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using dnlib.DotNet;
 using dnlib.DotNet.Writer;
+using System.Linq;
 using EazFixer.Processors;
 
 namespace EazFixer
@@ -28,6 +29,44 @@ namespace EazFixer
     /// <summary>Runs the retained reference processors without deleting VM dependencies.</summary>
     public static class FixerBridge
     {
+        /// <summary>Detects the supported protected-resource resolver without executing it.</summary>
+        public static bool HasResourceResolver(ModuleDef module) => ResourceResolver.IsDetected(module);
+
+        /// <summary>Recovers resources only, retaining direct manifest entries as authoritative.</summary>
+        public static void RecoverResources(string input, string output)
+        {
+            Flags.InFile = Path.GetFullPath(input);
+            Flags.OutFile = Path.GetFullPath(output);
+            Flags.KeepTypes = Flags.VirtFix = Flags.PreserveAll = true;
+            var processor = new ResourceResolver(true);
+            var ctx = new EazContext(Flags.InFile, new ProcessorBase[] { processor });
+            try
+            {
+                StacktracePatcher.Patch();
+                processor.Initialize(ctx);
+                if (!processor.Initialized) throw new InvalidDataException(processor.DetailMessage);
+                processor.Process();
+                if (!processor.Processed || processor.WarningCount != 0) throw new InvalidDataException(processor.DetailMessage);
+                if (processor.ResourceAssemblies.Count == 0) throw new InvalidDataException("No protected resource payload was recovered.");
+                // The interchange image contains no target code and is never
+                // executed. The caller merges only missing resource identities.
+                using (var payload = new ModuleDefUser("RecoveredResources.dll"))
+                {
+                    new AssemblyDefUser("RecoveredResources", new Version(1, 0)).Modules.Add(payload);
+                    long total = 0; int count = 0;
+                    foreach (var resource in ctx.Module.Resources.OfType<EmbeddedResource>().OrderBy(r => r.Name.String, StringComparer.Ordinal))
+                    {
+                        var reader = resource.CreateReader(); total += reader.Length;
+                        if (++count > 250000 || reader.Length > 256 * 1024 * 1024 || total > 512 * 1024 * 1024)
+                            throw new InvalidDataException("Recovered resource limits exceeded.");
+                        payload.Resources.Add(new EmbeddedResource(resource.Name, reader.ToArray(), resource.Attributes));
+                    }
+                    payload.Write(Flags.OutFile);
+                }
+            }
+            finally { StacktracePatcher.UnPatch(); ctx.Module.Dispose(); }
+        }
+
         public static List<FixerStageResult> Process(string input, string output, bool stringsOnly = false, Action<string,string,int> progress = null, bool runControlFlow = true)
         {
             Flags.InFile = Path.GetFullPath(input);

@@ -22,6 +22,7 @@ internal sealed class ResourceFileEditor
     }
 
     private readonly byte[] image;
+    private readonly byte[]? containerHeader;
     internal bool IsContainer {get;}
     internal bool HasSignature {get;}
     internal List<Asset> Assets {get;}=new();
@@ -40,7 +41,8 @@ internal sealed class ResourceFileEditor
         }
         if(container)
         {
-            using var stream=new MemoryStream(image,false);
+            byte[] readable=ResourceContainerEnvelope.ForRead(image,out containerHeader);
+            using var stream=new MemoryStream(readable,false);
             using var reader=new ResourceReader(stream);
             IDictionaryEnumerator iterator=reader.GetEnumerator();
             var names=new List<string>();
@@ -124,7 +126,7 @@ internal sealed class ResourceFileEditor
                     }
                     writer.AddResourceData(asset.Name,asset.Type,raw);
                 }
-                writer.Generate();result=output.ToArray();
+                writer.Generate();result=ResourceContainerEnvelope.WithHeader(output.ToArray(),containerHeader!);
             }
         }
         else result=PatchAssembly(changed);
