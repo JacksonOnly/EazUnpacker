@@ -40,6 +40,10 @@ internal static class NameRecoveryPass
         using var module = ModuleDefMD.Load(input);
         var types = module.GetTypes().Where(t => !t.IsGlobalModuleType).ToArray();
         var changes = new List<NameChange>();
+        bool preserveMarkupNames=MarkupNameGuard.RequiresStableNames(module);
+        if(preserveMarkupNames)
+            changes.Add(new NameChange {Kind="NamePreservation",Evidence=
+                "Markup resources can bind types, members, events and property paths by name. Retained metadata names until all markup references can be rewritten; parameter and PDB local naming remains enabled."});
         SafeProxyPass.Process(module,Path.Combine(Path.GetDirectoryName(mapPath)!,"safe-proxies.json"));
         InlineExpressionPass.Process(module,Path.Combine(Path.GetDirectoryName(mapPath)!,"inline-expressions.json"));
         // Fold literal conditional branches before per-method PDB scopes are
@@ -160,7 +164,7 @@ internal static class NameRecoveryPass
             {Add(changes,"TypeModifier",type,"sealed","unsealed");type.IsSealed=false;}
             string original = type.Name.String;
             bool entryType=module.EntryPoint?.DeclaringType==type;
-            if (entryType || NeedsName(original, true) || IsGeneratedTypeName(original))
+            if (!preserveMarkupNames && (entryType || NeedsName(original, true) || IsGeneratedTypeName(original)))
             {
                 string suffix = type.GenericParameters.Count>0?"`"+type.GenericParameters.Count:Regex.Match(original, @"`\d+$").Value;
                 var hint=hints.Get(type);
@@ -173,7 +177,7 @@ internal static class NameRecoveryPass
                 type.Name=proposed;
                 if(original!=proposed)Add(changes, "Type", type, originalTypes[type], type.FullName,evidence:entryType?"CLI entry-point declaring type; generated-role":hint?.Evidence??(inherited!=null?"declared base-type name; generated-role":"category numbered fallback; original-name-unavailable"));
             }
-            if (type.DeclaringType == null && type.Namespace.String.Split('.').Any(n => n.Length > 0 && NeedsName(n)))
+            if (!preserveMarkupNames && type.DeclaringType == null && type.Namespace.String.Split('.').Any(n => n.Length > 0 && NeedsName(n)))
             {
                 string ns = type.Namespace.String;
                 if (!namespaces.TryGetValue(ns, out string newNamespace)) namespaces.Add(ns, newNamespace = "Recovered.Namespace" + type.MDToken.Rid.ToString("X4"));
@@ -185,6 +189,7 @@ internal static class NameRecoveryPass
         }
         foreach (var group in groups)
         {
+            if(preserveMarkupNames)continue;
             if (!group.Any(m => !m.IsConstructor && NeedsName(m.Name))) continue;
             var fixedName = group.FirstOrDefault(m => !NeedsName(m.Name) && !m.IsConstructor)?.Name.String;
             var proposals=group.Select(hints.Get).Where(h=>h!=null).Select(h=>h!.Name).Distinct().ToArray();
@@ -200,14 +205,14 @@ internal static class NameRecoveryPass
                 Add(changes, "Method", method, originalMethods[method], name,evidence:fixedName!=null?"existing dispatch contract":role?.Evidence??"numbered fallback; original-name-unavailable");
             }
         }
-        if(module.EntryPoint is { } entryPoint && NeedsName(originalMethods[entryPoint]))
+        if(!preserveMarkupNames && module.EntryPoint is { } entryPoint && NeedsName(originalMethods[entryPoint]))
         {
             entryPoint.Name="Main";
             foreach(var change in changes.Where(c=>c.Kind=="Method" && c.Token==entryPoint.MDToken.ToString())){change.Renamed="Main";change.Evidence="entry-point metadata";}
         }
         foreach (var type in types)
         {
-            foreach (var field in type.Fields.Where(f => NeedsName(f.Name) || type.NestedTypes.Any(t=>t.Name==f.Name)))
+            foreach (var field in type.Fields.Where(f => !preserveMarkupNames && (NeedsName(f.Name) || type.NestedTypes.Any(t=>t.Name==f.Name))))
             {
                 var hint=hints.Get(field);
                 string name = Unique(hint?.Name??"field_"+field.MDToken.Rid.ToString(CultureInfo.InvariantCulture), type.Fields.Where(f => f != field).Select(f => f.Name.String)
@@ -216,6 +221,7 @@ internal static class NameRecoveryPass
             }
             foreach (var property in type.Properties)
             {
+                if(preserveMarkupNames)continue;
                 var externalAccessor=property.GetMethods.Concat(property.SetMethods).SelectMany(m=>m.Overrides).Select(o=>o.MethodDeclaration)
                     .FirstOrDefault(m=>(m.Name.String.StartsWith("get_")||m.Name.String.StartsWith("set_")) && OwnType(m.DeclaringType)==null);
                 if(externalAccessor!=null && property.GetMethods.Concat(property.SetMethods).All(m=>m.IsPrivate))
@@ -237,7 +243,7 @@ internal static class NameRecoveryPass
                 var property=type.Properties.FirstOrDefault(p=>originalProperties[p]==original);
                 if(property!=null)attribute.ConstructorArguments[0]=new CAArgument(module.CorLibTypes.String,new UTF8String(property.Name));
             }
-            foreach (var ev in type.Events.Where(e => NeedsName(e.Name)))
+            foreach (var ev in type.Events.Where(e => !preserveMarkupNames && NeedsName(e.Name)))
             {
                 string name = "Event" + ev.MDToken.Rid.ToString("X4");
                 Add(changes, "Event", ev, originalEvents[ev], name); ev.Name = name;

@@ -223,7 +223,7 @@ internal static class RecoveryPipeline
             result.Stages.Add(new StageResult{Name="InlineExpressions",Status="success",Changes=inlineCount,Detail="Bounded total integer leaf expressions inlined with exact-once argument evaluation; see inline-expressions.json."});
             ProgressEvents.Send(4,"info","整数表达式内联 "+inlineCount+" 处；调用参数的求值次数与顺序保留");
             ProgressEvents.Send(4,"success","命名恢复 "+renamed+" 项；自身完整性兼容 "+integrity+" 处");
-            result.Stages.Add(new StageResult{Name="Names",Status="success",Changes=renamed,Detail="Stable readable metadata names, references, resources and PDB locals recovered."});
+            result.Stages.Add(new StageResult{Name="Names",Status="success",Changes=renamed,Detail="Recovered safe metadata, parameter and PDB local names. Markup-bearing modules retain type/member names and namespaces to preserve external binding contracts; see rename-map.json."});
             if(File.Exists(cleaned+".config"))File.Copy(cleaned+".config",named+".config");
             cleaned=named;
             RememberOutput(result,cleaned,dir);

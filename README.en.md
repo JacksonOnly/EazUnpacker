@@ -16,7 +16,7 @@ A command-line unpacker and deobfuscator for **Eazfuscator.NET managed assemblie
 | Devirtualization | Discover VM formats and call sites; recover supported instructions, signatures and exception regions; retain originals on failure |
 | Inlining and proxies | Recover multiple VM sites per host; support constrained `ref` write-back; bypass transparent proxy chains and inline bounded, pure integer leaves |
 | Control flow | Fold proven integer/enum predicates, simplify switch dispatch and jump chains, propagate constants across unique predecessors, remove unreachable IL and unused local stores |
-| Readable symbols | Generate role-, base-type- and entry-point-aware names, shorten parameters, emit name maps and Portable PDBs |
+| Readable symbols | Generate role-, base-type- and entry-point-aware names, shorten parameters, emit name maps and Portable PDBs; retain type, namespace and member names in markup-bearing modules to preserve bindings |
 | Key reporting | Log verified keys with tokens and input namespace/type/method identities; retain structured records |
 | Optional source export | Export a C# project and string index with ILSpy, then attempt a rebuild |
 | Optional CLR validation | Prepare recovered hosts, inline adapters and access bridges; **disabled by default** |
