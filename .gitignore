@@ -63,6 +63,8 @@ temp/
 *.sarif
 *.jsonl
 *.strings.json
+*.resources.json
+*.json.files/
 result.json
 latest.json
 progress.json

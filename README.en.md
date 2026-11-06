@@ -4,7 +4,7 @@ A command-line unpacker and deobfuscator for **Eazfuscator.NET managed assemblie
 
 [简体中文](README.md) · **English** · **v1.4.2** · [Changelog](CHANGELOG.md)
 
-[Quick start](#quick-start) · [Features](#features) · [String editing](#edit-encrypted-strings-in-place) · [Options](#options-and-exit-codes) · [Development](#development-and-build)
+[Quick start](#quick-start) · [Features](#features) · [String editing](#edit-encrypted-strings-in-place) · [Resource editing](#extract-and-replace-resources) · [Options](#options-and-exit-codes) · [Development](#development-and-build)
 
 > Recovery uses metadata and IL semantics. Supported protections depend on the recovery report; arbitrary assemblies are not guaranteed to be fully restored.
 
@@ -13,6 +13,7 @@ A command-line unpacker and deobfuscator for **Eazfuscator.NET managed assemblie
 | Area | Capabilities |
 | --- | --- |
 | Strings and resources | Recover supported strings and resources; export identity-checked embedded dependencies beside the output using assembly names; edit Eaz encrypted strings without unpacking |
+| Resource editing | Extract and replace embedded assembly resources or standalone `.resources` entries; retain names and types without executing targets or deserializing custom objects |
 | Devirtualization | Discover VM formats and call sites; recover supported instructions, signatures and exception regions; retain originals on failure |
 | Inlining and proxies | Recover multiple VM sites per host; support constrained `ref` write-back; bypass transparent proxy chains and inline bounded, pure integer leaves |
 | Control flow | Fold proven integer/enum predicates, simplify switch dispatch and jump chains, propagate constants across unique predecessors, remove unreachable IL and unused local stores |
@@ -70,6 +71,22 @@ Embedded managed dependencies are named from their assembly identities, not obfu
 Export and apply use `input.exe.strings.json` beside the input by default; you can also specify a catalog path. Apply writes `input.edited.exe` unless you select another output or use `--in-place`. Edit only the `text` fields. You can remove entries you do not want to change. The catalog is bound to the exported binary; export again before editing a modified file. Keep the decrypted catalog local.
 
 Supports statically identifiable embedded string tables in managed PE files. The editor does not run or unpack the target. It can shorten, clear, or lengthen strings. If an edit does not fit the original slot, the editor rebuilds the resource and adds an offset map to the original decoder, preserving string IDs and call sites. Each encoded replacement is limited to 1 MiB. The editor verifies by decrypting the result and writes no partial output. Editing invalidates existing digital signatures.
+
+## Extract and replace resources
+
+```powershell
+.\Unpacker.exe resources ".\local\input.exe"
+.\Unpacker.exe resources apply ".\local\input.exe"
+# Or replace the original and keep a .bak backup
+.\Unpacker.exe resources apply ".\local\input.exe" --in-place
+# Standalone containers use the same workflow
+.\Unpacker.exe resources ".\local\input.resources"
+.\Unpacker.exe resources apply ".\local\input.resources"
+```
+
+The default catalog is `input.exe.resources.json`; exported files live in the catalog path plus `.files`. Use `resources export` for explicit export. A custom catalog is optional. Apply defaults to `input.edited.exe` (`input.edited.resources` for containers), or accepts an explicit output. Edit exported files only, or remove catalog entries you do not want to apply; retain identity, type and original hash fields. Catalogs are bound to the input; export again after modifying it. Existing outputs and backups are not overwritten. Keep catalogs and resources in a local ignored directory.
+
+Assembly export extracts whole embedded resources, not native PE resources or external linked files. To edit an embedded `.resources` container, export it again as a standalone input, replace the originally exported container with the edited result, then apply to the assembly. Container strings use UTF-8, byte arrays and streams use raw files, and other types retain serialized bytes without deserializing custom objects. Resource addition/deletion is not supported; names, types and attributes are retained. Empty, shorter and larger replacements are supported, with a 256 MiB per-entry limit and a 512 MiB file/aggregate limit. Assembly edits do not rewrite method IL; unsupported growth layouts fail without writing output. Editing may invalidate signatures or self-integrity checks.
 
 ## Options and exit codes
 
