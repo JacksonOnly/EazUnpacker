@@ -27,9 +27,9 @@
 
 ### 1. 解压完整发布包
 
-解压 `EazUnpacker-v1.4.2-win.zip`，保留 `worker\modern` 等所有子目录。入口为 `Unpacker.exe`，不要只复制 EXE。
+解压 `EazUnpacker-v1.4.2-win.zip`，保留 `worker` 下所有子目录。入口为 `Unpacker.exe`，不要只复制 EXE。
 
-- **运行环境**：Windows、.NET Framework 4.8；处理现代 .NET 目标还需要相应的 .NET Desktop Runtime。现代后端以 .NET 8 为目标，可向已安装的更新主版本滚动。
+- **运行环境**：Windows、.NET Framework 4.8；BAML 转换需要 .NET 8 或更新运行时，处理现代 WPF 目标还需要相应的 .NET Desktop Runtime。现代后端可向已安装的更新主版本滚动。
 - **目录权限**：解压到较短的可写目录，程序会在自身目录建立 `temp`。Framework 加载器或第三方工具仍可能受 Windows 长路径限制。
 - **是否需要 SDK**：普通解包不需要；源码重构建需要 .NET SDK 和目标项目所需引用。开发构建见[开发与构建](#开发与构建)。
 
@@ -87,6 +87,8 @@
 默认清单为 `input.exe.resources.json`，资源文件位于清单路径加 `.files` 的目录；`resources export` 是显式导出写法。文件按资源名或条目 Key 命名，容器子条目位于对应的 `.entries` 目录；非法字符、超长名称及大小写冲突会自动处理。JSON 是仅含 `id`、`name`、`type`、`format`、`file` 的数组，不记录大小、哈希或其他参数。只需修改导出目录内的文件再执行 `apply`，不必修改 JSON；也可移除无需回写的清单条目。回写默认另存为 `input.edited.exe`（容器为 `input.edited.resources`），`--in-place` 会备份覆盖原件；已有输出或备份不会被覆盖。修改程序集后再次编辑需重新导出，清单和资源请仅保存在本地忽略目录。
 
 受支持的保护型资源先自动恢复再导出；必要时在独立后端调用资源解码器，抑制运行副本的模块初始化，不进行完整反虚拟化或命名恢复。普通嵌入资源直接处理，不跟随外部链接或处理本机 PE 资源。`.resources` 中的条目会自动展开，修改子条目后自动重建容器，无需再次手工提取或设置大小、偏移；不要同时修改整个容器及其子条目。字符串使用 UTF-8，字节数组和流使用原始文件，其他类型保留序列化字节；兼容标准及受支持的预序列化容器，并保留读取器类型。不新增或删除资源，保留名称、类型与属性；支持清空、缩短与扩容，单项上限 256 MiB、文件及资源总量上限 512 MiB。普通 PE 资源替换不重写方法 IL；保护型资源恢复可能需要重建资源元数据及启动兼容处理。修改仍可能使数字签名或自校验失效。
+
+BAML 按内容自动识别并导出为同名 `.xaml`，清单 `format` 为 `xaml`，资源名和 Key 仍保留 `.baml`。直接编辑 XAML 后 `apply` 会自动编译回 BAML；未修改的内容保留原始二进制。可修改文字、属性及布局、添加无代码后台的新控件；保留已有元素的 `ub:*` 往返标记、`x:Class` 和事件处理器，它们用于保持原连接 ID 与代码后台绑定，不能通过资源编辑新增或重命名处理器。编译在独立的匹配 CLR 后端运行，需要原程序集及控件依赖；独立容器会自动查找同目录的对应程序集。无效 XML、不支持的指令或编译错误会停止回写，不生成部分结果。已有二进制清单仍可应用；要获得 XAML，请重新导出到新清单目录。
 
 ## 参数与退出码
 
@@ -161,7 +163,8 @@ temp/
 | AsmResolver.DotNet | 6.0.0-beta.4 | VM 后端的 PE/元数据与 CIL 生成 |
 | Lib.Harmony | 2.4.2 | 独立解码后端中的运行时适配 |
 | BouncyCastle.Cryptography | 2.5.1 | VM 加密流相关实现 |
-| ICSharpCode.Decompiler | 11.1.0.9782 | ILSpy C# 反编译与工程导出 |
+| ICSharpCode.Decompiler | 11.1.0.9782（主后端）、9.1.0.7988（BAML 后端） | ILSpy 反编译 |
+| ICSharpCode.BamlDecompiler | 9.1.0.7988 | 独立 BAML 转 XAML 后端 |
 | Newtonsoft.Json | 13.0.3 | 报告和进度序列化 |
 | System.Memory | 4.6.3（主项目） | Framework 兼容支持 |
 

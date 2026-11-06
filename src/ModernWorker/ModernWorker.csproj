@@ -1,14 +1,16 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms>
+    <OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms><UseWPF>true</UseWPF>
     <AssemblyName>Unpacker.ModernWorker</AssemblyName><LangVersion>latest</LangVersion><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings>
     <RollForward>LatestMajor</RollForward>
     <EnableUnsafeBinaryFormatterSerialization>false</EnableUnsafeBinaryFormatterSerialization>
   </PropertyGroup>
   <ItemGroup>
+    <Using Include="System.IO" />
     <Compile Include="..\ThirdParty\EazFixer\**\*.cs" Exclude="..\ThirdParty\EazFixer\Program.cs;..\ThirdParty\EazFixer\Options.cs;..\ThirdParty\EazFixer\*Tests.cs;..\ThirdParty\EazFixer\obj\**;..\ThirdParty\EazFixer\bin\**" />
     <Compile Include="..\ClrValidator.cs;..\DependencyLoadScope.cs;..\ProgressEvents.cs;..\WorkCache.cs" Link="Shared\%(Filename)%(Extension)" />
     <Compile Include="..\ResourceRecoveryWorker.cs;..\ModuleResourceRestore.cs;..\StartupBodyRestore.cs;..\WorkerDesktop.cs" Link="Shared\%(Filename)%(Extension)" />
+    <Compile Include="..\BamlCompiler.cs" Link="Shared\BamlCompiler.cs" />
     <ProjectReference Include="..\ThirdParty\EazyDevirt\EazyDevirt.Engine.csproj" />
     <PackageReference Include="dnlib" Version="4.5.0" /><PackageReference Include="Lib.Harmony" Version="2.4.2" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />

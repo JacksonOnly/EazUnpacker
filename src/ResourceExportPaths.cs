@@ -14,13 +14,13 @@ internal static class ResourceExportPaths
         var folders=new Dictionary<string,string>(StringComparer.Ordinal);
         var result=new Dictionary<string,string>(StringComparer.Ordinal);
         foreach(var asset in session.Assets.Where(a=>session.ContainerName(a.Id)==null))
-            result.Add(asset.Id,Unique(Component(asset.Name,budget),"",budget,names));
+            result.Add(asset.Id,Unique(Component(ExportName(asset),budget),"",budget,names));
         foreach(var asset in session.Assets.Where(a=>session.ContainerName(a.Id)!=null))
         {
             string parent=session.ContainerName(asset.Id)!;
             if(budget<40)
             {
-                result.Add(asset.Id,Unique(Component(asset.Name,budget),"",budget,names));continue;
+                result.Add(asset.Id,Unique(Component(ExportName(asset),budget),"",budget,names));continue;
             }
             if(!folders.TryGetValue(parent,out var folder))
             {
@@ -29,10 +29,13 @@ internal static class ResourceExportPaths
                 folders.Add(parent,folder);
             }
             int remaining=budget-folder.Length-1;
-            result.Add(asset.Id,Unique(Component(asset.Name,remaining),folder+"/",remaining,names));
+            result.Add(asset.Id,Unique(Component(ExportName(asset),remaining),folder+"/",remaining,names));
         }
         return result;
     }
+
+    private static string ExportName(ResourceFileEditor.Asset asset)=>asset.Format!="xaml"?asset.Name:
+        asset.Name.EndsWith(".baml",StringComparison.OrdinalIgnoreCase)?asset.Name.Substring(0,asset.Name.Length-5)+".xaml":asset.Name+".xaml";
 
     private static string Component(string name,int maximum)
     {

@@ -102,7 +102,7 @@ $notices|Set-Content -LiteralPath (Join-Path $package 'THIRD-PARTY-NOTICES.md') 
 $entry=Join-Path $package 'Unpacker.exe'
 $fileVersion=[Diagnostics.FileVersionInfo]::GetVersionInfo($entry).FileVersion
 if($fileVersion -ne "$Version.0"){throw "Unexpected executable version: $fileVersion"}
-foreach($worker in @('worker/Unpacker.Worker.exe','worker/modern/Unpacker.ModernWorker.exe')){
+foreach($worker in @('worker/Unpacker.Worker.exe','worker/modern/Unpacker.ModernWorker.exe','worker/baml/Unpacker.BamlWorker.exe')){
     $path=Join-Path $package $worker
     if([Diagnostics.FileVersionInfo]::GetVersionInfo($path).FileVersion -ne "$Version.0"){throw "Worker version mismatch: $worker"}
 }

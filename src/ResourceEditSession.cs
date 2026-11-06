@@ -2,9 +2,11 @@ namespace Unpacker;
 
 // Exposes both whole containers and their editable leaf files. Changes to a
 // leaf rebuild its container automatically before the outer PE is updated.
-internal sealed class ResourceEditSession
+internal sealed class ResourceEditSession : IDisposable
 {
     private readonly ResourceFileEditor editor;
+    private readonly BamlResources? baml;
+    private readonly Dictionary<string,ResourceFileEditor.Asset> rawAssets;
     private readonly Dictionary<string,ResourceFileEditor> containers=new(StringComparer.Ordinal);
     private readonly Dictionary<string,string> containerNames=new(StringComparer.Ordinal);
     private readonly Dictionary<string,(string Parent,string Local)> children=new(StringComparer.Ordinal);
@@ -12,7 +14,7 @@ internal sealed class ResourceEditSession
     internal bool IsContainer=>editor.IsContainer;
     internal bool HasSignature=>editor.HasSignature;
 
-    internal ResourceEditSession(byte[] image,bool container)
+    internal ResourceEditSession(byte[] image,bool container,string? original=null)
     {
         editor=new ResourceFileEditor(image,container);
         long total=0;
@@ -38,6 +40,19 @@ internal sealed class ResourceEditSession
                 Add(new ResourceFileEditor.Asset(id,leaf.Name,leaf.Type,leaf.Format,leaf.Data,leaf.Stored));
             }
         }
+        rawAssets=Assets.ToDictionary(a=>a.Id,StringComparer.Ordinal);
+        if(original!=null && Assets.Any(a=>a.Format=="binary" && BamlResources.IsBaml(a.Data)))
+        {
+            baml=new BamlResources(image,container,original,Assets);
+            long expanded=0;
+            for(int i=0;i<Assets.Count;i++)
+            {
+                var asset=Assets[i];byte[]? xaml=baml.Xaml(asset.Id);
+                if(xaml!=null)Assets[i]=new ResourceFileEditor.Asset(asset.Id,asset.Name,asset.Type,"xaml",xaml,asset.Stored);
+                expanded+=Assets[i].Data.Length;
+                if(expanded>ResourceFileEditor.MaxFileBytes)throw ResourceFileEditor.Invalid("展开后的资源体积超过限制。");
+            }
+        }
     }
 
     internal string? ContainerName(string id)=>children.TryGetValue(id,out var child)?
@@ -45,9 +60,9 @@ internal sealed class ResourceEditSession
 
     internal byte[] Apply(IReadOnlyDictionary<string,byte[]> edits,out int changes)
     {
-        var originals=Assets.ToDictionary(a=>a.Id,StringComparer.Ordinal);
+        var originals=rawAssets;
         var changed=new Dictionary<string,byte[]>(StringComparer.Ordinal);
-        foreach(var edit in edits)
+        foreach(var edit in baml?.Compile(edits)??edits)
         {
             if(!originals.TryGetValue(edit.Key,out var asset) || edit.Value.Length>ResourceFileEditor.MaxAssetBytes)
                 throw ResourceFileEditor.Invalid("替换资源条目无效。");
@@ -63,4 +78,6 @@ internal sealed class ResourceEditSession
         }
         return editor.Apply(outer,out _);
     }
+
+    public void Dispose()=>baml?.Dispose();
 }

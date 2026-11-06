@@ -9,7 +9,7 @@
     <ProjectReference><AdditionalProperties>ShouldUnsetParentConfigurationAndPlatform=false</AdditionalProperties></ProjectReference>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <Compile Remove="ThirdParty\**;ModernWorker\**;WorkerHost\**;tests\**;test-results\**" />
+    <Compile Remove="ThirdParty\**;ModernWorker\**;BamlWorker\**;WorkerHost\**;BamlCompiler.cs;tests\**;test-results\**" />
     <EmbeddedResource Remove="test-results\**;tests\**" />
     <ProjectReference Include="ThirdParty\EazFixer\EazFixer.Engine.csproj" />
     <ProjectReference Include="ThirdParty\EazyDevirt\EazyDevirt.Engine.csproj" />
@@ -18,11 +18,14 @@
     <PackageReference Include="System.Memory" Version="4.6.3" />
     <ProjectReference Include="WorkerHost\Unpacker.Worker.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="ModernWorker\ModernWorker.csproj" ReferenceOutputAssembly="false" SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="BamlWorker\Unpacker.BamlWorker.csproj" ReferenceOutputAssembly="false" SkipGetTargetFrameworkProperties="true" />
   </ItemGroup>
   <Target Name="CopyWorkerRuntime" AfterTargets="Build">
     <ItemGroup><WorkerRuntime Include="WorkerHost\bin\$(Configuration)\net48\*.*" /></ItemGroup>
     <Copy SourceFiles="@(WorkerRuntime)" DestinationFolder="$(OutputPath)worker" />
     <ItemGroup><ModernRuntime Include="ModernWorker\bin\$(Configuration)\net8.0-windows\**\*.*" /></ItemGroup>
     <Copy SourceFiles="@(ModernRuntime)" DestinationFiles="@(ModernRuntime->'$(OutputPath)worker\modern\%(RecursiveDir)%(Filename)%(Extension)')" />
+    <ItemGroup><BamlRuntime Include="BamlWorker\bin\$(Configuration)\net8.0-windows\*.*" /></ItemGroup>
+    <Copy SourceFiles="@(BamlRuntime)" DestinationFolder="$(OutputPath)worker\baml" />
   </Target>
 </Project>

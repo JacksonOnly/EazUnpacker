@@ -27,9 +27,9 @@ A command-line unpacker and deobfuscator for **Eazfuscator.NET managed assemblie
 
 ### 1. Extract the complete release
 
-Extract `EazUnpacker-v1.4.2-win.zip` and keep every subdirectory, including `worker\modern`. Run `Unpacker.exe`; copying the EXE alone is not sufficient.
+Extract `EazUnpacker-v1.4.2-win.zip` and keep every subdirectory under `worker`. Run `Unpacker.exe`; copying the EXE alone is not sufficient.
 
-- **Runtime**: Windows and .NET Framework 4.8. Modern .NET targets also need a suitable .NET Desktop Runtime. The modern worker targets .NET 8 and can roll forward to installed newer major versions.
+- **Runtime**: Windows and .NET Framework 4.8. BAML conversion requires .NET 8 or later; modern WPF targets also need a suitable .NET Desktop Runtime. Modern workers can roll forward to installed newer major versions.
 - **Permissions**: use a short, writable directory; the tool creates `temp` beside its executable. Framework loaders or third-party tools can still encounter Windows long-path limits.
 - **SDK**: not required for ordinary recovery. Rebuilding C# needs a .NET SDK and the target project's references. See [development](#development-and-build) to build the tool itself.
 
@@ -87,6 +87,8 @@ Supports statically identifiable embedded string tables in managed PE files. The
 The default catalog is `input.exe.resources.json`; exported files live in the catalog path plus `.files`. Use `resources export` for explicit export. Files use resource names or entry keys; container entries live in corresponding `.entries` directories. Unsafe characters, long names and case-insensitive collisions are handled automatically. The JSON array contains only `id`, `name`, `type`, `format` and `file`, without sizes, hashes or other parameters. Edit exported files and run `apply`; no JSON changes are required. You may remove entries you do not want to apply. Apply defaults to `input.edited.exe` (`input.edited.resources` for containers); `--in-place` replaces the original with a backup. Existing outputs and backups are not overwritten. Export again after modifying an assembly, and keep catalogs and resources in a local ignored directory.
 
 Supported protected resources are recovered before export. When needed, a separate backend invokes the resource decoder with module initialization suppressed in its runtime copy, without full devirtualization or name recovery. Ordinary embedded resources are handled directly; native PE resources and external links are not followed. `.resources` entries expand automatically and edited entries rebuild their container without manual extraction, sizes or offsets; do not edit a whole container and its children simultaneously. Strings use UTF-8, byte arrays and streams use raw files, and other types retain serialized bytes. Standard and supported preserialized containers retain their reader profile. Resource addition/deletion is not supported; names, types and attributes are retained. Empty, shorter and larger replacements have a 256 MiB per-entry limit and a 512 MiB file/aggregate limit. Ordinary PE resource edits do not rewrite method IL; protected-resource recovery may rebuild resource metadata and adapt startup. Editing may invalidate signatures or self-integrity checks.
+
+BAML is detected by content and exported as a same-name `.xaml` file with catalog `format: xaml`; resource names and keys retain `.baml`. Edit the XAML and `apply` compiles it back to BAML automatically; unchanged content preserves its original binary. Text, properties, layout and new controls without code-behind can be edited. Keep existing elements' `ub:*` roundtrip markers, `x:Class` and event handlers to preserve connection IDs and code-behind bindings; resource edits cannot add or rename handler methods. Compilation runs in a separate, matching CLR backend and needs the original assembly and control dependencies; standalone containers probe for their corresponding assembly in the same directory. Invalid XML, unsupported directives or compilation errors stop write-back without partial output. Older binary catalogs still apply; export to a new catalog directory to obtain XAML.
 
 ## Options and exit codes
 
@@ -161,7 +163,8 @@ The combined project is [GPL-3.0](LICENSE). Third-party components retain their 
 | AsmResolver.DotNet | 6.0.0-beta.4 | VM backend PE/metadata and CIL generation |
 | Lib.Harmony | 2.4.2 | Runtime adaptation in isolated decoder workers |
 | BouncyCastle.Cryptography | 2.5.1 | VM encrypted-stream support |
-| ICSharpCode.Decompiler | 11.1.0.9782 | ILSpy decompilation and project export |
+| ICSharpCode.Decompiler | 11.1.0.9782 (main), 9.1.0.7988 (BAML worker) | ILSpy decompilation |
+| ICSharpCode.BamlDecompiler | 9.1.0.7988 | Isolated BAML-to-XAML backend |
 | Newtonsoft.Json | 13.0.3 | Reports and progress serialization |
 | System.Memory | 4.6.3 (main project) | Framework compatibility |
 

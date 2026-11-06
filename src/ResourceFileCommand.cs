@@ -40,7 +40,7 @@ internal static class ResourceFileCommand
             bool container=Path.GetExtension(input).Equals(".resources",StringComparison.OrdinalIgnoreCase);
             var editCatalog=export?null:ReadCatalog(catalog,container,fingerprint);
             byte[] prepared=container?image:ResourceRecovery.Prepare(image,input);
-            var editor=new ResourceEditSession(prepared,container);
+            using var editor=new ResourceEditSession(prepared,container,input);
             if(export)
             {
                 Export(editor,catalog,files);
@@ -149,7 +149,8 @@ internal static class ResourceFileCommand
                 entry["file"]?.Type!=JTokenType.String ||
                 !originals.TryGetValue((string)entry["id"]!,out var asset) || edits.ContainsKey(asset.Id) ||
                 ((string?)entry["name"]!=asset.Name && (editor.ContainerName(asset.Id) is not string parent || (string?)entry["name"]!=parent+"::"+asset.Name)) ||
-                (string?)entry["type"]!=asset.Type || (string?)entry["format"]!=asset.Format)
+                (string?)entry["type"]!=asset.Type ||
+                ((string?)entry["format"]!=asset.Format && !(asset.Format=="xaml" && (string?)entry["format"]=="binary")))
                 throw Invalid("资源条目身份无效、重复或被修改；只修改导出的文件，或删除不需要回写的条目。");
             string path=SafeFile(files,(string)entry["file"]!);
             byte[] replacement=ReadBounded(path,ResourceFileEditor.MaxAssetBytes);
