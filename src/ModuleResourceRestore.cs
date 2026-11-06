@@ -7,10 +7,29 @@ namespace Unpacker;
 
 internal static class ModuleResourceRestore
 {
-    internal sealed class Carrier(uint handler,string resource)
+    internal sealed class Carrier(uint handler,string resource,byte[] image,int state,int multiplier)
     {
         internal uint Handler { get; }=handler;
         internal string Resource { get; }=resource;
+        internal byte[] Image { get; }=image;
+        internal byte[] Encode(byte[] data)
+        {
+            if(data.Length>128*1024*1024)throw Invalid();
+            var encoded=(byte[])data.Clone();int key=state;
+            for(int i=0;i<encoded.Length;i++){encoded[i]^=(byte)key;key=key*multiplier%256;}
+            using var output=new MemoryStream();
+            using(var compressed=new DeflateStream(output,CompressionLevel.Optimal,true))
+            using(var writer=new BinaryWriter(compressed)) {writer.Write(data.Length);writer.Write(encoded);}
+            byte[] result=output.ToArray();
+            using var input=new MemoryStream(result,false);
+            using var inflater=new DeflateStream(input,CompressionMode.Decompress);
+            using var reader=new BinaryReader(inflater);
+            if(reader.ReadInt32()!=data.Length)throw Invalid();
+            byte[] check=reader.ReadBytes(data.Length);key=state;
+            for(int i=0;i<check.Length;i++){check[i]^=(byte)key;key=key*multiplier%256;}
+            if(!Enumerable.SequenceEqual(check,data) || inflater.ReadByte()!=-1)throw Invalid();
+            return result;
+        }
     }
 
     internal static int Process(string input,out Carrier? carrier,bool preferExisting=false)
@@ -57,6 +76,7 @@ internal static class ModuleResourceRestore
         if(length is <512 or >128*1024*1024)throw Invalid();
         byte[] bytes=reader.ReadBytes(length);
         if(bytes.Length!=length)throw Invalid();
+        int initialState=state;
         for(int i=0;i<bytes.Length;i++)
         {
             bytes[i]^=(byte)state;
@@ -80,7 +100,7 @@ internal static class ModuleResourceRestore
             module.Resources.Add(new EmbeddedResource(item.Name,payload,item.Attributes));
             added++;
         }
-        carrier=new Carrier(handlers[0].MDToken.Raw,name);
+        carrier=new Carrier(handlers[0].MDToken.Raw,name,bytes,initialState,multiplier);
         if(added==0)return 0;
         foreach(var method in module.GetTypes().SelectMany(t=>t.Methods).Where(m=>m.HasBody))
             method.Body.KeepOldMaxStack=true;

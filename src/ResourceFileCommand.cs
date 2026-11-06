@@ -50,9 +50,11 @@ internal static class ResourceFileCommand
             var edits=ReadEdits(editor,editCatalog!,files);
             byte[] patched=editor.Apply(edits,out int changes);
             if(changes==0){Console.WriteLine("[resources] 无改动，未写入文件。");return 0;}
+            if(!container)patched=ResourcePacking.Restore(image,prepared,patched,input);
             string? backup=inPlace?input+".bak":null;
             if(backup!=null && (File.Exists(backup) || Directory.Exists(backup)))throw Invalid("备份已存在，请先移走备份或选择独立输出。");
-            Publish(output,backup,stream=>stream.Write(patched,0,patched.Length),inPlace?fingerprint:null);
+            var companions=container || inPlace?new Dictionary<string,byte[]>(StringComparer.OrdinalIgnoreCase):ReadCompanions(input,output);
+            PublishEdited(output,backup,patched,inPlace?fingerprint:null,companions);
             Console.WriteLine($"[resources] 已替换 {changes} 项"+(inPlace?"；已备份原件":"")+
                 (editor.HasSignature?"；原数字签名不再有效":"")+"。");
             return 0;
@@ -206,6 +208,88 @@ internal static class ResourceFileCommand
             }
         }
         finally {if(File.Exists(temporary))File.Delete(temporary);}
+    }
+
+    private static Dictionary<string,byte[]> ReadCompanions(string input,string output)
+    {
+        var result=new Dictionary<string,byte[]>(StringComparer.OrdinalIgnoreCase);
+        void Add(string source,string target,bool dependencies=false)
+        {
+            if(!File.Exists(source))return;
+            byte[] data=ReadBounded(source,ResourceFileEditor.MaxAssetBytes);
+            if(dependencies)data=RenameDependencyEntry(data,input,output);
+            if(Directory.Exists(target) || File.Exists(target) && !Enumerable.SequenceEqual(data,ReadBounded(target,ResourceFileEditor.MaxAssetBytes)))
+                throw Invalid("输出的运行配置已存在且内容不同，未覆盖配置或程序。");
+            result.Add(target,data);
+        }
+        Add(input+".config",output+".config");
+        string sourceStem=Path.ChangeExtension(input,null),targetStem=Path.ChangeExtension(output,null);
+        foreach(string suffix in new[]{".runtimeconfig.json",".runtimeconfig.dev.json",".deps.json"})Add(sourceStem+suffix,targetStem+suffix,suffix==".deps.json");
+        return result;
+    }
+
+    private static byte[] RenameDependencyEntry(byte[] data,string input,string output)
+    {
+        if(Path.GetFileName(input)==Path.GetFileName(output))return data;
+        using var module=dnlib.DotNet.ModuleDefMD.Load(input);
+        string? assembly=module.Assembly?.Name.String;
+        JObject root;
+        try {root=JObject.Parse(Utf8Text(data),new JsonLoadSettings {DuplicatePropertyNameHandling=DuplicatePropertyNameHandling.Error});}
+        catch(JsonException) {throw Invalid("运行时依赖描述不是有效 JSON，未另存程序。");}
+        bool changed=false;
+        foreach(var target in (root["targets"] as JObject)?.Properties()??Enumerable.Empty<JProperty>())
+            foreach(var library in (target.Value as JObject)?.Properties()??Enumerable.Empty<JProperty>())
+            {
+                if(!library.Name.StartsWith(assembly+"/",StringComparison.Ordinal) || library.Value["runtime"] is not JObject runtime)continue;
+                var assets=runtime.Properties().Where(p=>p.Name==Path.GetFileName(input) || p.Name==module.Name.String).ToArray();
+                if(assets.Length==0 && runtime.Count==1)assets=runtime.Properties().Where(p=>Path.GetExtension(p.Name) is ".dll" or ".exe").ToArray();
+                foreach(var asset in assets)
+                {
+                    string name=Path.GetFileName(output);
+                    if(runtime.Property(name)!=null && name!=asset.Name)throw Invalid("运行时主程序集映射存在冲突，未另存程序。");
+                    asset.Replace(new JProperty(name,asset.Value.DeepClone()));changed=true;
+                }
+            }
+        return changed?ResourceFileEditor.Utf8.GetBytes(root.ToString(Formatting.Indented)):data;
+    }
+
+    private static string Utf8Text(byte[] data)
+    {
+        int offset=data.Length>=3 && data[0]==0xef && data[1]==0xbb && data[2]==0xbf?3:0;
+        return ResourceFileEditor.Utf8.GetString(data,offset,data.Length-offset);
+    }
+
+    private static void PublishEdited(string output,string? backup,byte[] data,string? expected,Dictionary<string,byte[]> companions)
+    {
+        var installed=new List<string>();bool complete=false;
+        try
+        {
+            // Make required startup configuration available before the new
+            // executable becomes visible. Never overwrite an existing sidecar.
+            foreach(var companion in companions)
+            {
+                if(File.Exists(companion.Key))
+                {
+                    if(!Enumerable.SequenceEqual(companion.Value,ReadBounded(companion.Key,ResourceFileEditor.MaxAssetBytes)))
+                        throw Invalid("输出的运行配置在发布期间发生变化，未写入程序。");
+                    continue;
+                }
+                Publish(companion.Key,null,stream=>stream.Write(companion.Value,0,companion.Value.Length));
+                installed.Add(companion.Key);
+            }
+            Publish(output,backup,stream=>stream.Write(data,0,data.Length),expected);complete=true;
+        }
+        finally
+        {
+            if(!complete)
+                foreach(string file in installed)
+                    try
+                    {
+                        if(File.Exists(file) && Enumerable.SequenceEqual(companions[file],ReadBounded(file,ResourceFileEditor.MaxAssetBytes)))File.Delete(file);
+                    }
+                    catch(IOException) { }
+                    catch(UnauthorizedAccessException) { }
+        }
     }
 
     private static string InputPath(string path)

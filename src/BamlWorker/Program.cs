@@ -86,6 +86,14 @@ internal static class Program
                 }
         }
         var root=document.Root??throw new InvalidDataException();
+        // The pinned decompiler renders WPF's XML-space attached property as
+        // a qualified XAML directive. Expose the standard XML spelling instead.
+        foreach(var element in root.DescendantsAndSelf())
+        {
+            var space=element.Attribute(XName.Get("XmlAttributeProperties.XmlSpace","http://schemas.microsoft.com/winfx/2006/xaml"));
+            if(space==null)continue;
+            element.SetAttributeValue(XNamespace.Xml+"space",space.Value);space.Remove();
+        }
         root.SetAttributeValue(XNamespace.Xmlns+"ub",Roundtrip.NamespaceName);
         root.SetAttributeValue(XNamespace.Xmlns+"mc",Compatibility.NamespaceName);
         root.SetAttributeValue(Compatibility+"Ignorable",((string?)root.Attribute(Compatibility+"Ignorable")+" ub").Trim());

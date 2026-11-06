@@ -20,6 +20,10 @@ namespace EazFixer.Processors
         private MethodInfo _decompressor;
         public int ExtractedCount { get; private set; }
 
+        internal Dictionary<string,byte[]> RepackResources(ModuleDef source,ModuleDef edited,IEnumerable<Assembly> assemblies,
+            IEnumerable<string> requested,out HashSet<string> handled)=>
+            ResourceRepacker.Pack(source,edited,assemblies,requested,_decrypter,_decompressor,out handled);
+
         protected override void InitializeInternal()
         {
             //try to find the embedded assemblies string, which is located in 

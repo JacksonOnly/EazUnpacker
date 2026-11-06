@@ -17,6 +17,8 @@ internal static class Program
             WorkCache.Initialize();
             if(args.Length==2 && args[0]=="--baml-compile")
                 return WorkerDesktop.Run(args,a=>BamlCompiler.Run(a[1]));
+            if(args.Length==2 && args[0]=="--resources-pack")
+                return WorkerDesktop.Run(args,a=>ResourcePackingWorker.Run(a[1]));
             if(args.Length==4 && args[0]=="--resources-worker")
                 return WorkerDesktop.Run(args,a=>ResourceRecoveryWorker.Run(a[1],a[2],a[3]));
             if(args.Length>=4 && args[0]=="--vm-worker")

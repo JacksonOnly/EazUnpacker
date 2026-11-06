@@ -32,6 +32,35 @@ namespace EazFixer
         /// <summary>Detects the supported protected-resource resolver without executing it.</summary>
         public static bool HasResourceResolver(ModuleDef module) => ResourceResolver.IsDetected(module);
 
+        /// <summary>Re-encodes edited carrier resources with a verified original-format encoder.</summary>
+        public static IReadOnlyCollection<string> RepackResources(string input,string edited,string output,IEnumerable<string> requested)
+        {
+            Flags.InFile=Path.GetFullPath(input);Flags.OutFile=Path.GetFullPath(output);
+            Flags.KeepTypes=Flags.VirtFix=Flags.PreserveAll=true;
+            var resources=new ResourceResolver(true);var resolver=new Processors.AssemblyResolver();
+            var ctx=new EazContext(Flags.InFile,new ProcessorBase[]{resources,resolver});
+            try
+            {
+                StacktracePatcher.Patch();
+                resources.Initialize(ctx);resolver.Initialize(ctx);
+                if(!resources.Initialized || !resolver.Initialized)throw new InvalidDataException("Protected resource repacker initialization failed.");
+                resources.Process();
+                if(!resources.Processed || resources.WarningCount!=0)throw new InvalidDataException("Protected resources could not be verified.");
+                using var original=ModuleDefMD.Load(input);
+                using var changed=ModuleDefMD.Load(edited);
+                var updates=resolver.RepackResources(original,changed,resources.ResourceAssemblies,requested,out var handled);
+                using var payload=new ModuleDefUser("ResourceUpdates.dll");
+                new AssemblyDefUser("ResourceUpdates",new Version(1,0)).Modules.Add(payload);
+                foreach(var update in updates)
+                {
+                    var source=original.Resources.OfType<EmbeddedResource>().Single(r=>r.Name==update.Key);
+                    payload.Resources.Add(new EmbeddedResource(source.Name,update.Value,source.Attributes));
+                }
+                payload.Write(output);return handled.ToArray();
+            }
+            finally {StacktracePatcher.UnPatch();ctx.Module.Dispose();}
+        }
+
         /// <summary>Recovers resources only, retaining direct manifest entries as authoritative.</summary>
         public static void RecoverResources(string input, string output)
         {

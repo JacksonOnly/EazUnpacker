@@ -62,7 +62,9 @@ internal sealed class BamlCompiler
                 var after=ReadXml((string)item["xaml"]!);
                 var compiler=new BamlCompiler(before);
                 compiler.Validate(before,after);
-                byte[] data=Equivalent(before.Root!,after.Root!)?File.ReadAllBytes((string)item["baml"]!):compiler.Compile(after);
+                bool unchanged=Equivalent(before.Root!,after.Root!);
+                byte[] data=unchanged?File.ReadAllBytes((string)item["baml"]!):compiler.Compile(after);
+                if(!unchanged)ValidateBinary(data,owner);
                 File.WriteAllBytes((string)item["output"]!,data);
             }
             return 0;
@@ -77,6 +79,15 @@ internal sealed class BamlCompiler
         var document=XDocument.Load(reader,LoadOptions.PreserveWhitespace);
         if(document.Root==null || document.Descendants().Count()>250000 || document.Descendants().Any(e=>e.Ancestors().Take(257).Count()>256))
             throw new InvalidDataException("XAML document limits exceeded.");
+        // Accept the spelling emitted by older exports as well.
+        foreach(var element in document.Descendants())
+        {
+            var legacy=element.Attribute(Xaml+"XmlAttributeProperties.XmlSpace");
+            if(legacy==null)continue;
+            var space=element.Attribute(XNamespace.Xml+"space");
+            if(space!=null && space.Value!=legacy.Value)throw new InvalidDataException("Conflicting XML whitespace directives.");
+            element.SetAttributeValue(XNamespace.Xml+"space",legacy.Value);legacy.Remove();
+        }
         return document;
     }
 
@@ -221,8 +232,9 @@ internal sealed class BamlCompiler
             }
             else if(node is XText text)
             {
-                bool preserve=parent.AncestorsAndSelf().Select(e=>(string?)e.Attribute(XNamespace.Xml+"space")).FirstOrDefault(v=>v!=null)=="preserve";
-                if(!preserve && string.IsNullOrWhiteSpace(text.Value) && parent.HasElements)continue;
+                // Pretty-printing around comments creates text nodes even in
+                // otherwise empty controls. Such indentation is not UI content.
+                if(!PreservesSpace(parent) && string.IsNullOrWhiteSpace(text.Value))continue;
                 if(text.Value.Length==0)continue;
                 var converter=TypeDescriptor.GetConverter(contentType);
                 bool convert=converter.CanConvertFrom(typeof(string));
@@ -255,6 +267,45 @@ internal sealed class BamlCompiler
 
     private static IEnumerable<string> Events(XElement element)=>((string?)element.Attribute(Roundtrip+"Events")??"").Split('|').Where(v=>v.Length!=0);
 
+    private static bool PreservesSpace(XElement element)=>element.AncestorsAndSelf()
+        .Select(e=>(string?)e.Attribute(XNamespace.Xml+"space")).FirstOrDefault(v=>v!=null)=="preserve";
+
+    private static void ValidateBinary(byte[] data,Assembly owner)
+    {
+        // Read through WPF's actual binary reader, without constructing the
+        // target UI. Reject malformed node streams before publishing resources.
+        using var stream=new MemoryStream(data,false);
+        var type=typeof(System.Windows.Application).Assembly.GetType("System.Windows.Baml2006.Baml2006Reader",true)!;
+        using var reader=(System.Xaml.XamlReader)Activator.CreateInstance(type,BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic,
+            null,new object[]{stream,new XamlReaderSettings {LocalAssembly=owner}},null)!;
+        var stack=new Stack<XamlNodeType>();int roots=0;
+        while(reader.Read())
+        {
+            var current=stack.Count==0?XamlNodeType.None:stack.Peek();
+            switch(reader.NodeType)
+            {
+                case XamlNodeType.StartObject:
+                case XamlNodeType.GetObject:
+                    if(current!=XamlNodeType.StartMember && !(current==XamlNodeType.None && reader.NodeType==XamlNodeType.StartObject && roots++==0))
+                        throw new InvalidDataException("BAML contains an object outside a member.");
+                    stack.Push(XamlNodeType.StartObject);break;
+                case XamlNodeType.StartMember:
+                    if(current!=XamlNodeType.StartObject)throw new InvalidDataException("BAML contains an invalid member start.");
+                    stack.Push(XamlNodeType.StartMember);break;
+                case XamlNodeType.Value:
+                    if(current!=XamlNodeType.StartMember)throw new InvalidDataException("BAML contains text outside a member.");
+                    break;
+                case XamlNodeType.EndMember:
+                    if(current!=XamlNodeType.StartMember)throw new InvalidDataException("BAML contains an invalid member end.");
+                    stack.Pop();break;
+                case XamlNodeType.EndObject:
+                    if(current!=XamlNodeType.StartObject)throw new InvalidDataException("BAML contains an invalid object end.");
+                    stack.Pop();break;
+            }
+        }
+        if(stack.Count!=0 || roots!=1)throw new InvalidDataException("BAML node stream is incomplete.");
+    }
+
     private static bool Ignorable(XElement element,XNamespace ns)=>ns!=XNamespace.None && element.AncestorsAndSelf()
         .SelectMany(e=>((string?)e.Attribute(Compatibility+"Ignorable")??"").Split(' '))
         .Where(p=>p.Length!=0 && p!="ub").Any(p=>element.GetNamespaceOfPrefix(p)==ns);
@@ -264,7 +315,7 @@ internal sealed class BamlCompiler
         if(left.Name!=right.Name || !left.Attributes().OrderBy(a=>a.Name.ToString()).Select(a=>a.Name+"="+a.Value)
             .SequenceEqual(right.Attributes().OrderBy(a=>a.Name.ToString()).Select(a=>a.Name+"="+a.Value)))return false;
         XNode[] Nodes(XElement element)=>element.Nodes().Where(n=>n is XElement || n is XText text &&
-            (!string.IsNullOrWhiteSpace(text.Value) || !element.HasElements || element.AncestorsAndSelf().Any(e=>(string?)e.Attribute(XNamespace.Xml+"space")=="preserve"))).ToArray();
+            (!string.IsNullOrWhiteSpace(text.Value) || PreservesSpace(element))).ToArray();
         var a=Nodes(left);var b=Nodes(right);
         return a.Length==b.Length && a.Zip(b,(x,y)=>x is XElement ex && y is XElement ey?Equivalent(ex,ey):XNode.DeepEquals(x,y)).All(equal=>equal);
     }

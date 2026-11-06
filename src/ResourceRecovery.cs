@@ -5,7 +5,7 @@ namespace Unpacker;
 
 internal static class ResourceRecovery
 {
-    internal static byte[] Prepare(byte[] image,string original)
+    internal static byte[] Prepare(byte[] image,string original,bool report=true)
     {
         using var module=ModuleDefMD.Load(image);
         bool globalResolver=module.GlobalType?.FindStaticConstructor()?.Body?.Instructions.Any(i=>
@@ -15,7 +15,7 @@ internal static class ResourceRecovery
         string worker=modern?Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"worker","modern","Unpacker.ModernWorker.exe"):
             Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"worker","Unpacker.Worker.exe");
         if(!File.Exists(worker))throw ResourceFileEditor.Invalid("资源恢复后端缺失，请保留完整构建目录。");
-        Console.WriteLine("[resources] 正在自动恢复保护层资源。");
+        if(report)Console.WriteLine("[resources] 正在自动恢复保护层资源。");
         WorkCache.Initialize();string directory=WorkCache.CreateTemporary("resources");bool success=false;
         try
         {

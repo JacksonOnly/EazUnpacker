@@ -11,6 +11,7 @@
     <Compile Include="..\ClrValidator.cs;..\DependencyLoadScope.cs;..\ProgressEvents.cs;..\WorkCache.cs" Link="Shared\%(Filename)%(Extension)" />
     <Compile Include="..\ResourceRecoveryWorker.cs;..\ModuleResourceRestore.cs;..\StartupBodyRestore.cs;..\WorkerDesktop.cs" Link="Shared\%(Filename)%(Extension)" />
     <Compile Include="..\BamlCompiler.cs" Link="Shared\BamlCompiler.cs" />
+    <Compile Include="..\ResourcePackingWorker.cs;..\ResourceFileEditor.cs;..\ResourceContainerEnvelope.cs" Link="Shared\%(Filename)%(Extension)" />
     <ProjectReference Include="..\ThirdParty\EazyDevirt\EazyDevirt.Engine.csproj" />
     <PackageReference Include="dnlib" Version="4.5.0" /><PackageReference Include="Lib.Harmony" Version="2.4.2" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
