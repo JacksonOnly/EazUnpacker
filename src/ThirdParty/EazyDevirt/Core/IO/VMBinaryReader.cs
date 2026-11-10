@@ -1,4 +1,3 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using AsmResolver.DotNet;
 using AsmResolver.DotNet.Signatures;
@@ -8,16 +7,27 @@ using EazyDevirt.Devirtualization;
 using Echo.Memory;
 using Echo.Platforms.AsmResolver.Emulation;
 using Echo.Platforms.AsmResolver.Emulation.Dispatch;
+using Echo.Platforms.AsmResolver.Emulation.Invocation;
 
 namespace EazyDevirt.Core.IO;
 
 internal class VMBinaryReader : VMBinaryReaderBase
 {
-    private static readonly DevirtualizationContext Ctx = DevirtualizationContext.Instance;
+    private static DevirtualizationContext Ctx => DevirtualizationContext.Instance;
 
     private static TypeDefinition _instanceType = null!;
     private static FieldDefinition _isMemoryStreamFieldDef = null!;
     private static FieldDefinition _bufferFieldDef = null!;
+    private static MethodDefinition _fillBufferMethodDef = null!;
+    private static HashSet<IMethodDescriptor> _fillBufferOperands = null!;
+    private static SzArrayTypeSignature _byteArrayType = null!;
+
+    private sealed class MethodOperandComparer : IEqualityComparer<IMethodDescriptor>
+    {
+        internal static readonly MethodOperandComparer Instance = new();
+        public bool Equals(IMethodDescriptor? x, IMethodDescriptor? y) => ReferenceEquals(x, y);
+        public int GetHashCode(IMethodDescriptor value) => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value);
+    }
 
     private static MethodDefinition _readInt32MethodDef = null!;
     private static MethodDefinition _readUInt32MethodDef = null!;
@@ -34,12 +44,18 @@ internal class VMBinaryReader : VMBinaryReaderBase
     private static BitVector _instanceObj = null!;
 
     private static bool _initialized;
+    private static int _steps;
+    private static int _primitiveSize;
 
     public VMBinaryReader(Stream input, bool leaveOpen = false) : base(input, Encoding.UTF8, leaveOpen)
     {
-        if (!_initialized)
+        if (!_initialized || !ReferenceEquals(_vm.ContextModule, Ctx.Module))
         {
+            _initialized = false;
             _vm = new CilVirtualMachine(Ctx.Module, false); // 32 bit always breaks something, even on 32 bit only assemblies.
+            _byteArrayType = new SzArrayTypeSignature(Ctx.Module.CorLibTypeFactory.Byte);
+            _fillBufferOperands = new HashSet<IMethodDescriptor>(MethodOperandComparer.Instance);
+            _vm.Invoker = DefaultInvokers.StepIn;
             _vm.Dispatcher.BeforeInstructionDispatch += DispatcherOnBeforeInstructionDispatch;
             
             _thread = _vm.CreateThread();
@@ -47,9 +63,6 @@ internal class VMBinaryReader : VMBinaryReaderBase
             FindInstanceDefs();
             if (_instanceType is null)
                 throw new ArgumentNullException(nameof(_instanceType), "Failed finding VMBinaryReader instance type!");
-            if (_isMemoryStreamFieldDef is null)
-                throw new ArgumentNullException(nameof(_isMemoryStreamFieldDef),
-                    "Failed finding VMBinaryReader _isMemoryStream field!");
             if (_bufferFieldDef is null)
                 throw new ArgumentNullException(nameof(_bufferFieldDef),
                     "Failed finding VMBinaryReader _buffer field!");
@@ -61,124 +74,74 @@ internal class VMBinaryReader : VMBinaryReaderBase
 
     #region Setup
 
-    // overly complicated method to find VMBinaryReader stuff
-    [SuppressMessage("ReSharper", "ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract")]
     private static void FindInstanceDefs()
     {
-        foreach(var type in Ctx.Module.GetAllTypes())
+        _instanceType = null!; _bufferFieldDef = null!; _isMemoryStreamFieldDef = null!;
+        _fillBufferMethodDef = null!;
+        var candidates = new List<(TypeDefinition Type, MethodDefinition Int32, FieldDefinition Buffer)>();
+        // Prefer the reader actually stored by the VM runtime. Nested string and
+        // resource readers can otherwise share the same primitive signatures.
+        var referenced = Ctx.VMDeclaringType?.Fields.Where(f => !f.IsStatic)
+            .Select(f => f.Signature?.FieldType.ToTypeDefOrRef()?.Resolve()).Where(t => t != null).ToArray()
+            ?? Array.Empty<TypeDefinition>();
+        foreach (var type in Ctx.Module.GetAllTypes())
         {
-            var fields = type.Fields;
-
-            try
+            if (!type.Fields.Any(f => !f.IsStatic && f.Signature?.FieldType.FullName == "System.Text.Decoder")) continue;
+            foreach (var method in type.Methods.Where(m => Primitive(m, "System.Int32")))
             {
-                // private MemoryStream memoryStream_0;
-                if (fields.SingleOrDefault(x => x is
-                        { IsStatic: false, IsPrivate: true, Signature.FieldType.FullName: "System.IO.MemoryStream" }) is null)
-                    continue;
-                
-                // private BinaryReader binaryReader_0;
-                if (fields.SingleOrDefault(x => x is
-                        { IsStatic: false, IsPrivate: true, Signature.FieldType.FullName: "System.IO.BinaryReader" }) is null)
-                    continue;
-                
-                // private Decoder m_decoder;
-                if (fields.SingleOrDefault(x => x is
-                        { IsStatic: false, IsPrivate: true, Signature.FieldType.FullName: "System.Text.Decoder" }) is null)
-                    continue;
-                
-                var methods = type.Methods;
-
-                // internal static decimal ToDecimal(byte[] byte_3)
-                var toDecimalInternal = methods.SingleOrDefault(x => x is
-                    { IsStatic: true, IsAssembly: true, Signature.ReturnType.FullName: "System.Decimal" });
-                if (toDecimalInternal is null)
-                    continue;
-                
-                // private static decimal ToDecimal(int int_1, int int_2, int int_3, int int_4)
-                var toDecimalPrivate = methods.SingleOrDefault(x => x is
-                    { IsStatic: true, IsPrivate: true, Signature.ReturnType.FullName: "System.Decimal" });
-                if (toDecimalPrivate is null)
-                    continue;
-
-                _instanceType = type;
-                break;
-            }
-            catch (InvalidOperationException)
-            {
+                var buffers = method.CilMethodBody!.Instructions.Where(i => i.OpCode.Code == CilCode.Ldfld)
+                    .Select(i => i.Operand).OfType<FieldDefinition>().Where(f => !f.IsStatic &&
+                        f.DeclaringType == type && f.Signature?.FieldType.FullName == "System.Byte[]")
+                    .GroupBy(f => f).Where(g => g.Count() == 4).Select(g => g.Key).ToArray();
+                if (buffers.Length != 1 || !method.CilMethodBody.Instructions.Any(i => i.OpCode.Code == CilCode.Shl)) continue;
+                if (new[] { "System.UInt32", "System.Int64", "System.UInt64", "System.Int16", "System.UInt16",
+                    "System.Single", "System.Double", "System.Decimal" }.Any(name => type.Methods.Count(m => Primitive(m, name)) != 1)) continue;
+                candidates.Add((type, method, buffers[0]));
             }
         }
-
-        if (_instanceType is null)
-            return;
-
-        foreach (var method in _instanceType.Methods)
-        {
-            var sig = method.Signature;
-            if (sig is null or { ReturnsValue: false } || sig.ReturnType.FullName != "System.Int32") // for ReadInt32
-                continue;
-            
-            var instructions = method.CilMethodBody?.Instructions;
-            if (instructions is null)
-                continue;
-
-            try
-            {
-                var ldflds = instructions.Where(x => x.OpCode.Code is CilCode.Ldfld).ToArray();
-                if (ldflds.Length == 6)
-                {
-                    _isMemoryStreamFieldDef = (ldflds.SingleOrDefault(x => x.Operand is FieldDefinition
-                    {
-                        Signature.FieldType.FullName: "System.Boolean"
-                    })?.Operand as FieldDefinition)!;
-                    if (_isMemoryStreamFieldDef is null)
-                        continue;
-                    
-                    var buffer = ldflds.FirstOrDefault(x => x.Operand is FieldDefinition
-                    {
-                        Signature.FieldType.FullName: "System.Byte[]"
-                    } xf && ldflds.Count(l => l.Operand is IFieldDescriptor f && f.FullName == xf.FullName) == 4);
-                    
-                    _bufferFieldDef = (buffer?.Operand as FieldDefinition)!;
-                    if (_bufferFieldDef is null)
-                        continue;
-
-                    var mdtoken = method.MetadataToken.ToUInt32();
-                    // the order of these is the same across every sample that has been tested
-                    _readInt32MethodDef = method;
-                    _readUInt32MethodDef = Ctx.Module.LookupMember<MethodDefinition>(mdtoken += 1);
-                    _readInt64MethodDef = Ctx.Module.LookupMember<MethodDefinition>(mdtoken += 1);
-                    _readUInt64MethodDef = Ctx.Module.LookupMember<MethodDefinition>(mdtoken += 1);
-                    _readInt16MethodDef = Ctx.Module.LookupMember<MethodDefinition>(mdtoken += 1);
-                    _readUInt16MethodDef = Ctx.Module.LookupMember<MethodDefinition>(mdtoken += 1);
-                    _readSingleMethodDef = Ctx.Module.LookupMember<MethodDefinition>(mdtoken += 2); // skip 1
-                    _readDoubleMethodDef = Ctx.Module.LookupMember<MethodDefinition>(mdtoken += 1);
-                    _readDecimalMethodDef = Ctx.Module.LookupMember<MethodDefinition>(mdtoken + 1);
-
-                    if (_readDecimalMethodDef.Signature is not
-                        { ReturnsValue: true, ReturnType.FullName: "System.Decimal" } && Ctx.Options.VeryVerbose)
-                    {
-                        Ctx.Console.Warning($"{nameof(_readDecimalMethodDef)} does not have correct return type on current iteration. VMBinaryReader may not be initialized correctly.");
-                        continue;
-                    }
-                    
-                    break;
-                }
-                
-            }
-            catch (InvalidOperationException)
-            {
-            }
-        }
+        var anchored = candidates.Where(c => referenced.Contains(c.Type)).ToArray();
+        var matches = anchored.Length != 0 ? anchored : candidates.ToArray();
+        if (matches.Length != 1) throw new NotSupportedException(matches.Length == 0
+            ? "Cannot identify the VM primitive reader." : "Ambiguous VM primitive reader.");
+        var selected = matches[0];
+        _instanceType = selected.Type; _readInt32MethodDef = selected.Int32; _bufferFieldDef = selected.Buffer;
+        var booleans = _readInt32MethodDef.CilMethodBody!.Instructions.Where(i => i.OpCode.Code == CilCode.Ldfld)
+            .Select(i => i.Operand).OfType<FieldDefinition>().Where(f => f.DeclaringType == _instanceType &&
+                f.Signature?.FieldType.FullName == "System.Boolean").Distinct().ToArray();
+        if (booleans.Length > 1) throw new NotSupportedException("Ambiguous VM primitive fast-path flag.");
+        _isMemoryStreamFieldDef = booleans.SingleOrDefault()!;
+        var fills = _readInt32MethodDef.CilMethodBody.Instructions.Select(i => i.Operand).OfType<IMethodDescriptor>()
+            .Select(m => m.Resolve()).Where(m => m != null && m.DeclaringType == _instanceType && !m.IsStatic &&
+                m.Signature?.ReturnType.FullName == "System.Void" && m.Signature.ParameterTypes.Count == 1 &&
+                m.Signature.ParameterTypes[0].FullName == "System.Int32").Distinct().ToArray();
+        if (fills.Length != 1) throw new NotSupportedException("Cannot identify the VM primitive buffer refill.");
+        _fillBufferMethodDef = fills[0]!;
+        _fillBufferOperands.Add(_fillBufferMethodDef);
+        // Resolve call-site aliases once, never on the per-primitive hot path.
+        foreach (var operand in _instanceType.Methods.Where(m => m.CilMethodBody != null)
+            .SelectMany(m => m.CilMethodBody!.Instructions).Where(i => i.OpCode.Code is CilCode.Call or CilCode.Callvirt)
+            .Select(i => i.Operand).OfType<IMethodDescriptor>())
+            if (operand.DeclaringType?.FullName == _instanceType.FullName && operand.Resolve() == _fillBufferMethodDef)
+                _fillBufferOperands.Add(operand);
+        MethodDefinition Read(string name) => _instanceType.Methods.Single(m => Primitive(m, name));
+        _readUInt32MethodDef = Read("System.UInt32"); _readInt64MethodDef = Read("System.Int64");
+        _readUInt64MethodDef = Read("System.UInt64"); _readInt16MethodDef = Read("System.Int16");
+        _readUInt16MethodDef = Read("System.UInt16"); _readSingleMethodDef = Read("System.Single");
+        _readDoubleMethodDef = Read("System.Double"); _readDecimalMethodDef = Read("System.Decimal");
     }
+
+    private static bool Primitive(MethodDefinition method, string name) => !method.IsStatic &&
+        method.Signature?.ParameterTypes.Count == 0 && method.Signature.ReturnType.FullName == name &&
+        method.CilMethodBody?.Instructions.Count > 0;
 
     private void SetupInstanceObj()
     {
         var instanceAddress = _vm.Heap.AllocateObject(_instanceType, true); 
         var instanceObjectSpan = _vm.Heap.GetObjectSpan(instanceAddress);
-        var isMemoryStreamField = instanceObjectSpan.SliceObjectField(_vm.ValueFactory, _isMemoryStreamFieldDef);
         // This is a boolean that determines whether to use ReadInt32Special in the ReadInt32 method.
         // It should never have to be set to 1 unless ReadInt32Special changes endianness, in which case, we will need to find the ReadInt32Special method and add a handler for it as well.
-        isMemoryStreamField.U8 = 0;
+        if (_isMemoryStreamFieldDef != null)
+            instanceObjectSpan.SliceObjectField(_vm.ValueFactory, _isMemoryStreamFieldDef).U8 = 0;
         _instanceObj = _vm.ValueFactory.CreateNativeInteger(instanceAddress);
     }
     
@@ -188,57 +151,72 @@ internal class VMBinaryReader : VMBinaryReaderBase
     
     private static void DispatcherOnBeforeInstructionDispatch(object? _, CilDispatchEventArgs e)
     {
+        if (++_steps > 100000) throw new InvalidDataException("VM primitive reader exceeded its instruction budget.");
         var ins = e.Instruction;
+        if (ins.OpCode.Code is not (CilCode.Call or CilCode.Callvirt or CilCode.Newobj) ||
+            ins.Operand is not IMethodDescriptor method || method.Signature is not { } signature) return;
         var frame = e.Context.CurrentFrame;
         var vm = e.Context.Machine;
-        var factory = vm.ValueFactory;
-        switch (ins.OpCode.Code)
+        var factory = vm.ContextModule.CorLibTypeFactory;
+        T Pop<T>(TypeSignature type)
         {
-            case CilCode.Callvirt:
-            case CilCode.Call:
-                var method = (ins.Operand as IMethodDescriptor)!;
-                if (method.Signature is { ReturnsValue: true })
-                {
-                    if (method.DeclaringType!.FullName == "System.IO.BinaryReader")
-                    {
-                        switch (method.Signature.ReturnType.FullName)
-                        {
-                            // this.ToBinaryReader(array2).ReadSingle();
-                            case "System.Single":
-                                var s = frame.EvaluationStack.Pop(new SzArrayTypeSignature(Ctx.Module.CorLibTypeFactory.Byte));
-                                var sBytes = vm.ObjectMarshaller.ToObject<byte[]>(s)!;
-                                var sValue = ToBinaryReader(sBytes).ReadSingle();
-                                frame.EvaluationStack.Push(sValue, vm.ContextModule.CorLibTypeFactory.Single);
-                                break;
-                            
-                            // this.ToBinaryReader(array2).ReadDouble();
-                            case "System.Double":
-                                var d = frame.EvaluationStack.Pop(new SzArrayTypeSignature(Ctx.Module.CorLibTypeFactory.Byte));
-                                var dBytes = vm.ObjectMarshaller.ToObject<byte[]>(d)!;
-                                var dValue = ToBinaryReader(dBytes).ReadDouble();
-                                frame.EvaluationStack.Push(dValue, vm.ContextModule.CorLibTypeFactory.Double);
-                                break;
-                        }
-                    }
-                    else
-                    {
-                        switch (method.Signature.ReturnType.FullName)
-                        {
-                            // byte[] array2 = this.method_25();
-                            case "System.Byte[]":
-                                var byteArray = vm.ObjectMarshaller.ToBitVector(new byte[16]);
-                                frame.EvaluationStack.Push(byteArray, new SzArrayTypeSignature(Ctx.Module.CorLibTypeFactory.Byte));
-                                break;
-                        }
-                    }
-                }
-
-                break;
-
-            default:
-                return;
+            var vector = frame.EvaluationStack.Pop(type);
+            try { return vm.ObjectMarshaller.ToObject<T>(vector)!; }
+            finally { vm.ValueFactory.BitVectorPool.Return(vector); }
         }
-
+        void DropThis()
+        {
+            if (!signature.HasThis) return;
+            var vector = frame.EvaluationStack.Pop(factory.Object);
+            vm.ValueFactory.BitVectorPool.Return(vector);
+        }
+        var bytesType = _byteArrayType;
+        if (ins.OpCode.Code != CilCode.Newobj &&
+            (ReferenceEquals(method, _fillBufferMethodDef) || _fillBufferOperands.Contains(method)))
+        {
+            int count = Pop<int>(factory.Int32); DropThis();
+            if (count < 0 || count > _primitiveSize) throw new InvalidDataException("Invalid VM primitive buffer size.");
+        }
+        else if (ins.OpCode.Code != CilCode.Newobj && method.DeclaringType == _instanceType &&
+            signature.ReturnType.FullName == "System.Byte[]" && signature.ParameterTypes.Count == 0)
+        {
+            DropThis();
+            frame.EvaluationStack.Push(vm.ObjectMarshaller.ToBitVector(new byte[16]), signature.ReturnType);
+        }
+        else if (ins.OpCode.Code != CilCode.Newobj && method.DeclaringType == _instanceType &&
+            signature.ReturnType.FullName == "System.IO.BinaryReader" && signature.ParameterTypes.Count == 1 &&
+            signature.ParameterTypes[0].FullName == "System.Byte[]")
+        {
+            var bytes = Pop<byte[]>(bytesType); DropThis();
+            // Keep the byte buffer as an opaque reader handle. Only the two
+            // standard floating-point reads below may consume this handle.
+            frame.EvaluationStack.Push(vm.ObjectMarshaller.ToBitVector(bytes), signature.ReturnType);
+        }
+        else if (ins.OpCode.Code != CilCode.Newobj && method.DeclaringType?.FullName == "System.IO.BinaryReader" &&
+            signature.ParameterTypes.Count == 0 && signature.HasThis &&
+            method.Name?.ToString() is "ReadSingle" or "ReadDouble")
+        {
+            var bytes = Pop<byte[]>(signature.HasThis ? method.DeclaringType.ToTypeSignature() : bytesType);
+            using var reader = ToBinaryReader(bytes);
+            if (method.Name == "ReadSingle") frame.EvaluationStack.Push(reader.ReadSingle(), factory.Single);
+            else frame.EvaluationStack.Push(reader.ReadDouble(), factory.Double);
+        }
+        else if (ins.OpCode.Code != CilCode.Newobj && method.DeclaringType?.FullName == "System.BitConverter" &&
+            method.Name == "Int64BitsToDouble" && signature.ParameterTypes.Count == 1 &&
+            signature.ParameterTypes[0].FullName == "System.Int64" && signature.ReturnType.FullName == "System.Double")
+        {
+            frame.EvaluationStack.Push(BitConverter.Int64BitsToDouble(Pop<long>(factory.Int64)), factory.Double);
+        }
+        else if (ins.OpCode.Code == CilCode.Newobj && method.DeclaringType?.FullName == "System.Decimal" &&
+            signature.ParameterTypes.Select(p => p.FullName).SequenceEqual(new[] {
+                "System.Int32", "System.Int32", "System.Int32", "System.Boolean", "System.Byte" }))
+        {
+            byte scale = Pop<byte>(factory.Byte); bool negative = Pop<bool>(factory.Boolean);
+            int high = Pop<int>(factory.Int32), middle = Pop<int>(factory.Int32), low = Pop<int>(factory.Int32);
+            var value = new decimal(low, middle, high, negative, scale);
+            frame.EvaluationStack.Push(vm.ObjectMarshaller.ToBitVector(value), method.DeclaringType.ToTypeSignature());
+        }
+        else return;
         e.IsHandled = true;
         frame.ProgramCounter += ins.Size;
     }
@@ -250,13 +228,23 @@ internal class VMBinaryReader : VMBinaryReaderBase
 
         
         _thread.CallStack.Peek().WriteArgument(0, _instanceObj);
-        _thread.Run();
+        _primitiveSize = bytes.Length; _steps = 0;
+        try { _thread.Run(); }
+        catch
+        {
+            while (_thread.CallStack.Count > 1) _thread.CallStack.Pop();
+            _vm.ObjectMapMemory.Clear();
+            throw;
+        }
 
         var typeSig = Ctx.Importer.ImportTypeSignature(typeof(T));
-        var result = _vm.ObjectMarshaller.ToObject<T>(_thread.CallStack.Peek().EvaluationStack.Pop(typeSig))!;
-
-        _vm.ObjectMapMemory.Clear();
-        return result;
+        var value = _thread.CallStack.Peek().EvaluationStack.Pop(typeSig);
+        try { return _vm.ObjectMarshaller.ToObject<T>(value)!; }
+        finally
+        {
+            _vm.ValueFactory.BitVectorPool.Return(value);
+            _vm.ObjectMapMemory.Clear();
+        }
     }
 
     #endregion Emulation

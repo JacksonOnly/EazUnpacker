@@ -13,10 +13,9 @@ internal static class AssemblyInspector
         // Eaz has both boxed-result and void executor wrappers. Return type
         // alone loses real VM methods. Require the runtime's decoded-position
         // entry point as corroboration instead: an ordinary formatting helper
-        // with (Stream,string,object[]) has no matching void(Stream,long,string).
-        var runtimes=new HashSet<string>(types.Where(t=>t.Methods.Any(m=>m.MethodSig is {Params.Count:3} sig
-            && sig.RetType.ElementType==ElementType.Void && sig.Params[0].FullName=="System.IO.Stream"
-            && sig.Params[1].FullName=="System.Int64" && sig.Params[2].FullName=="System.String"))
+        // with (Stream,string,object[]) has no matching decoded-position loader.
+        // The loader's argument order is not stable; require the full type set.
+        var runtimes=new HashSet<string>(types.Where(IsVmRuntime)
             .Select(t=>t.FullName),StringComparer.Ordinal);
         var result = new AssemblyInfo
         {
@@ -47,4 +46,10 @@ internal static class AssemblyInspector
         && signature.Params[0].FullName=="System.IO.Stream"
         && signature.Params[1].FullName is "System.String" or "System.Int64"
         && signature.Params.Last().FullName=="System.Object[]";
+
+    internal static bool IsVmRuntime(TypeDef type)=>type.Methods.Any(m=>!m.IsStatic && m.HasBody &&
+        m.MethodSig is {Params.Count:3} signature && signature.RetType.ElementType==ElementType.Void &&
+        signature.Params.Select(p=>p.FullName).OrderBy(n=>n,StringComparer.Ordinal)
+            .SequenceEqual(new[]{"System.IO.Stream","System.Int64","System.String"})) &&
+        type.Methods.Any(m=>IsExecutor(m.MethodSig));
 }

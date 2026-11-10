@@ -41,10 +41,10 @@ internal sealed class VMTypeWireLayout
                 kind.EndsWith("[]") ? VMTypeWireField.Arguments : throw new NotSupportedException("Unknown VM type record field."));
         }
         int arrayIndex=Array.FindIndex(items,i=>i.OpCode.Code==CilCode.Newarr);
-        var countRead=items.Take(arrayIndex).Select(i=>i.Operand).OfType<MethodDefinition>().LastOrDefault(m=>
-            m.Parameters.Count==0 && m.Signature?.ReturnType.FullName is "System.Int16" or "System.Int32");
+        var countRead=items.Take(arrayIndex).Select(i=>i.Operand).OfType<IMethodDescriptor>().LastOrDefault(m=>
+            m.Signature?.ParameterTypes.Count==0 && m.Signature?.ReturnType.FullName is "System.Int16" or "System.Int32");
         if(countRead==null)throw new NotSupportedException("Cannot discover VM operand array count encoding.");
-        var countBody=countRead.CilMethodBody?.Instructions;
+        var countBody=(countRead as MethodDefinition)?.CilMethodBody?.Instructions;
         layout.ArrayCountEncoding=countRead.Signature!.ReturnType.FullName=="System.Int16" ? VMArrayCountEncoding.Int16 :
             countBody!=null && countBody.Any(i=>i.IsLdcI4() && i.GetLdcI4Constant()==127) &&
                 countBody.Any(i=>i.OpCode.Code==CilCode.And) && countBody.Any(i=>i.OpCode.Code==CilCode.Shl)

@@ -27,7 +27,10 @@ namespace EazFixer.Processors
             var failures = new HashSet<Tuple<MethodDef, int>>();
             var unavailable = new HashSet<MethodDef>();
             int unresolved = 0, constructors = 0;
-            foreach (var method in Utils.GetMethodsRecursive(Ctx.Module).Where(item => item.HasBody && item.Body.HasInstructions))
+            // Keep decoder internals intact. A same-signature cache wrapper passes
+            // its runtime argument to the core; that implementation call is not an
+            // unresolved business call and may still be needed by retained users.
+            foreach (var method in Utils.GetMethodsRecursive(Ctx.Module).Where(item => item.HasBody && item.Body.HasInstructions && !_decrypters.Contains(item)))
             {
                 var body = method.Body;
                 var targets = GetBoundaries(body);

@@ -63,6 +63,8 @@ internal record VMMethodInfo
     public VMMethodInfo(BinaryReader reader, VMHeaderLayout layout)
     {
         _layout=layout;
+        if(layout.LeadingZeroByte && reader.ReadByte()!=0)
+            throw new InvalidDataException("Invalid VM method format marker.");
         Name="";VMLocals=new();VMParameters=new();int types=0;
         int ReadTypePosition()
         {
@@ -84,7 +86,7 @@ internal record VMMethodInfo
                 case VMHeaderField.Type:
                     if(types++==0)_firstType=ReadTypePosition();else _secondType=ReadTypePosition();break;
                 case VMHeaderField.Name:Name=reader.ReadString();break;
-                case VMHeaderField.Flags:BindingFlags=reader.ReadByte();break;
+                case VMHeaderField.Flags:BindingFlags=layout.BooleanFlags?(byte)(reader.ReadBoolean()?1:0):reader.ReadByte();break;
                 case VMHeaderField.Locals:
                     int locals=ReadCount(4);
                     for(int i=0;i<locals;i++)VMLocals.Add(new VMLocal(ReadTypePosition()));break;

@@ -56,6 +56,16 @@ internal record DevirtualizationContext
     public VMTypeWireLayout TypeOperandLayout { get; set; } = null!;
     public int MethodStaticMask { get; set; }
     public int MethodGenericMask { get; set; }
+    public bool MethodFlagsAreBooleans { get; set; }
+    public bool MethodStaticBooleanFirst { get; set; }
+    public bool StandardMetadataReader { get; set; }
+    public bool PositionOrCipher { get; set; }
+
+    internal CryptoStreamV3 CreateCryptoStream(Stream stream,int key,bool leaveOpen=true) =>
+        new(stream,key,leaveOpen,PositionOrCipher);
+
+    internal BinaryReader CreateMetadataReader(Stream stream) => StandardMetadataReader
+        ? new VMMetadataReader(stream) : new VMBinaryReader(stream,true);
 
     public DevirtualizationContext(DevirtualizationOptions opts)
     {

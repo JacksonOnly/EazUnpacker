@@ -28,6 +28,17 @@ internal static class ArithmeticResultPattern
             instructions[next+4].OpCode.Code==CilCode.Ret &&
             instructions[next].Operand is IMethodDescriptor emptyCtor && emptyCtor.DeclaringType==setter.DeclaringType)
             return true;
+        if(next+6<instructions.Count && instructions[next].OpCode.Code==CilCode.Newobj &&
+            instructions[next].Operand is IMethodDescriptor storedCtor && storedCtor.Signature?.ParameterTypes.Count==0 &&
+            instructions[next+1].IsStloc() && instructions[next+2].IsLdloc() && instructions[next+3].IsLdloc() &&
+            instructions[next+5].IsLdloc() &&
+            instructions[next+1].GetLocalVariableIndex()==instructions[next+2].GetLocalVariableIndex() &&
+            instructions[next+1].GetLocalVariableIndex()==instructions[next+5].GetLocalVariableIndex() &&
+            instructions[next+3].GetLocalVariableIndex()==instructions[storeIndex].GetLocalVariableIndex() &&
+            instructions[next+4].Operand is IMethodDescriptor storedSetter && storedSetter.DeclaringType==storedCtor.DeclaringType &&
+            storedSetter.Signature?.ReturnType.FullName=="System.Void" && storedSetter.Signature.ParameterTypes.Count==1 &&
+            storedSetter.Signature.ParameterTypes[0].FullName is "System.Int32" or "System.Int64" &&
+            instructions[next+6].OpCode.Code==CilCode.Ret)return true;
         if (next + 2 >= instructions.Count || !instructions[next].IsLdloc() ||
             instructions[next].GetLocalVariableIndex() != instructions[storeIndex].GetLocalVariableIndex() ||
             instructions[next + 1].OpCode.Code != CilCode.Newobj ||

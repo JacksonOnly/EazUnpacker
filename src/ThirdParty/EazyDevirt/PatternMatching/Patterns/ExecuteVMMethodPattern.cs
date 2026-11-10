@@ -26,10 +26,32 @@ internal record ExecuteVMMethodPattern : IPattern
     public override bool Verify(MethodDefinition method, int index = 0)
     {
         var resolveTypeMethod = method.CilMethodBody!.Instructions[index + 4].Operand as SerializedMethodDefinition;
-        return resolveTypeMethod!.Signature!.ReturnsValue ||
-               resolveTypeMethod.Signature.ReturnType.FullName == "System.Type" &&
+        return resolveTypeMethod?.Signature?.ReturnType.FullName == "System.Type" &&
                resolveTypeMethod.Parameters.Count == 2 &&
                resolveTypeMethod.Parameters[0].ParameterType.FullName == "System.Int32" &&
                resolveTypeMethod.Parameters[1].ParameterType.FullName == "System.Boolean";
     }
+}
+
+// Some runtimes resolve parameter types without a separate generic-context flag.
+internal record ExecuteVMMethodWithoutTypeFlagPattern : IPattern
+{
+    public override IList<CilOpCode> Pattern => new List<CilOpCode>
+    {
+        CilOpCodes.Ldarg_0,
+        CilOpCodes.Ldloc_S,
+        CilOpCodes.Callvirt,
+        CilOpCodes.Call,
+        CilOpCodes.Stloc_S,
+        CilOpCodes.Ldarg_1,
+        CilOpCodes.Ldloc_0,
+        CilOpCodes.Ldnull,
+    };
+
+    public override bool MatchEntireBody => false;
+
+    public override bool Verify(MethodDefinition method, int index = 0) =>
+        method.CilMethodBody!.Instructions[index + 3].Operand is MethodDefinition resolver &&
+        resolver.Signature?.ReturnType.FullName == "System.Type" &&
+        resolver.Parameters.Count == 1 && resolver.Parameters[0].ParameterType.FullName == "System.Int32";
 }

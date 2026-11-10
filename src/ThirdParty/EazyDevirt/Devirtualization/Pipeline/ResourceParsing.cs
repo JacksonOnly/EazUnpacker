@@ -31,8 +31,7 @@ internal sealed class ResourceParsing : StageBase
             if(name==null)continue;
             var vmGetter=method.DeclaringType!.Methods.FirstOrDefault(m=>m.IsStatic && m.Parameters.Count==0 && m.Signature?.ReturnsValue==true &&
                 m.Signature.ReturnType.ToTypeDefOrRef()?.Resolve() is { } t &&
-                t.Methods.Any(x=>x.Signature?.ReturnType.FullName=="System.Void" && x.Parameters.Count==3 &&
-                    x.Parameters[0].ParameterType.FullName=="System.IO.Stream" && x.Parameters[1].ParameterType.FullName=="System.Int64"));
+                t.Methods.Any(MethodDiscovery.IsLoadVMPositionMethod));
             if(vmGetter==null)continue;
             if(field==null || value==null)
             {

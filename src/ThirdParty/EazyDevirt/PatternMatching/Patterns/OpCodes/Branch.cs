@@ -1,3 +1,5 @@
+using AsmResolver.DotNet;
+using AsmResolver.DotNet.Code.Cil;
 using AsmResolver.DotNet.Serialized;
 using AsmResolver.PE.DotNet.Cil;
 using EazyDevirt.Core.Abstractions.Interfaces;
@@ -121,6 +123,43 @@ internal record Blt : IOpCodePattern
 
     public override bool Verify(VMOpCode vmOpCode, int index) => PatternMatcher.MatchesPattern(new CltInnerPattern(),
         (vmOpCode.SerializedDelegateMethod.CilMethodBody?.Instructions[6].Operand as SerializedMethodDefinition)!);
+}
+
+// Both popped operands can be saved before the comparison, rather than leaving
+// the second operand on the evaluation stack.
+internal record BltStoredOperands : IOpCodePattern
+{
+    public override IList<CilOpCode> Pattern=>new[]
+    {
+        CilOpCodes.Ldarg_0,CilOpCodes.Call,CilOpCodes.Stloc,
+        CilOpCodes.Ldarg_0,CilOpCodes.Call,CilOpCodes.Stloc,
+        CilOpCodes.Ldloc,CilOpCodes.Ldloc,CilOpCodes.Call,CilOpCodes.Brfalse_S,
+        CilOpCodes.Ldarg_1,CilOpCodes.Castclass,CilOpCodes.Callvirt,CilOpCodes.Stloc,
+        CilOpCodes.Ldarg_0,CilOpCodes.Ldloc,CilOpCodes.Call,CilOpCodes.Ret,
+    };
+    public override CilOpCode? CilOpCode=>CilOpCodes.Blt;
+    public override bool InterchangeLdlocOpCodes=>true;
+    public override bool InterchangeStlocOpCodes=>true;
+    public override bool Verify(VMOpCode opcode,int index=0)
+    {
+        var ins=opcode.SerializedDelegateMethod.CilMethodBody!.Instructions;
+        return ins[index+1].Operand is MethodDefinition rightPop &&
+            PatternMatcher.MatchesPattern(new PopStackPattern(),rightPop) &&
+            ins[index+4].Operand is MethodDefinition leftPop &&
+            PatternMatcher.MatchesPattern(new PopStackPattern(),leftPop) &&
+            ins[index+2].GetLocalVariableIndex()==ins[index+7].GetLocalVariableIndex() &&
+            ins[index+5].GetLocalVariableIndex()==ins[index+6].GetLocalVariableIndex() &&
+            ins[index+8].Operand is MethodDefinition compare && compare.IsStatic &&
+            compare.Signature?.ReturnType.FullName=="System.Boolean" && compare.Parameters.Count==2 &&
+            PatternMatcher.MatchesPattern(new CltInnerPattern(),compare) &&
+            ins[index+9].Operand is ICilLabel end && end.Offset==ins[index+17].Offset &&
+            ins[index+12].Operand is IMethodDescriptor position && position.Signature?.ReturnType.FullName=="System.UInt32" &&
+            position.Signature.ParameterTypes.Count==0 &&
+            ins[index+13].GetLocalVariableIndex()==ins[index+15].GetLocalVariableIndex() &&
+            ins[index+16].Operand is MethodDefinition setBranch && !setBranch.IsStatic &&
+            setBranch.Parameters.Count==1 && setBranch.Parameters[0].ParameterType.FullName=="System.UInt32" &&
+            PatternMatcher.MatchesPattern(new SetBranchIndexPattern(),setBranch);
+    }
 }
 #endregion Blt
 

@@ -102,10 +102,21 @@ internal record VMMethodData : VMInlineOperandData
     public VMMethodData(BinaryReader reader) : base(VMInlineOperandType.Method)
     {
         DeclaringType = VMInlineOperand.ReadInternal(reader);
+        var context=EazyDevirt.Devirtualization.DevirtualizationContext.Instance;
+        if(context.MethodFlagsAreBooleans)
+        {
+            bool first=reader.ReadBoolean(),second=reader.ReadBoolean();
+            IsStatic=context.MethodStaticBooleanFirst?first:second;
+            HasGenericParameters=context.MethodStaticBooleanFirst?second:first;
+            Flags=(byte)((IsStatic?context.MethodStaticMask:0)|(HasGenericParameters?context.MethodGenericMask:0));
+        }
+        else
+        {
         Flags = reader.ReadByte();
         // these constants are also different between versions (#3)
         IsStatic = (Flags & EazyDevirt.Devirtualization.DevirtualizationContext.Instance.MethodStaticMask) > 0;
         HasGenericParameters = (Flags & EazyDevirt.Devirtualization.DevirtualizationContext.Instance.MethodGenericMask) > 0;
+        }
         Name = reader.ReadString();
         ReturnType = VMInlineOperand.ReadInternal(reader);
         Parameters = VMInlineOperand.ReadArrayInternal(reader);

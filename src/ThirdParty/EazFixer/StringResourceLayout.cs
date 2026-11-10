@@ -59,18 +59,15 @@ namespace EazFixer
             if (!redirect.HasValue || !il.Skip(storeArg + 1).Take(direct - storeArg - 1)
                 .Any(i => i.OpCode.Code == Code.Neg)) throw Unknown();
 
-            var lcg = Enumerable.Range(direct, il.Count - direct).Where(i => il[i].OpCode.Code == Code.Mul &&
-                ConstantEndingAt(body, seeds, direct, i) == 214013).ToArray();
-            if (lcg.Length != 1) throw Unknown();
-            int add = FindIndex(lcg[0] + 1, Math.Min(il.Count, lcg[0] + 16), i =>
-                il[i].OpCode.Code == Code.Add && ConstantEndingAt(body, seeds, lcg[0] + 1, i) == 2531011);
-            int next = Math.Min(il.Count, add + 12);
-            if (!il.Skip(add + 1).Take(next - add - 1).Any(i => i.OpCode.Code == Code.Shr_Un)) throw Unknown();
+            int payload = FindPayloadTransform(method, seeds, direct);
 
-            var masks = ConstantsBefore(body, seeds, direct, lcg[0], Code.And);
+            var masks = ConstantsBefore(body, seeds, direct, payload, Code.And);
             var flags = masks.Where(x => x == 0x20000000 || x == 0x40000000 || x == unchecked((int)0x80000000)).ToArray();
             if (flags.Length != 3 || flags.Distinct().Count() != 3 || masks.Count(x => x == 0x0fffffff) != 1)
                 throw Unknown();
+            int byteTextFlag = FindArrayFlag(body, seeds, direct, payload, flags, "System.Char");
+            int compressedFlag = FindArrayFlag(body, seeds, direct, payload, flags, "System.Byte");
+            if (byteTextFlag == compressedFlag) throw Unknown();
 
             return new StringResourceLayout
             {
@@ -82,8 +79,72 @@ namespace EazFixer
                 FrameMask = ReadMask(body, seeds, frame, compare),
                 RedirectMarker = ConstantEndingAt(body, seeds, frame + 1, compare) ?? throw Unknown(),
                 RedirectMask = redirect.Value,
-                ByteTextFlag = flags[0], CompressedFlag = flags[1], LengthMask = 0x0fffffff
+                ByteTextFlag = byteTextFlag, CompressedFlag = compressedFlag, LengthMask = 0x0fffffff
             };
+        }
+
+        private static int FindPayloadTransform(MethodDef method, Dictionary<Local, int> seeds, int start)
+        {
+            var il = method.Body.Instructions;
+            var inline = FindLcg(method.Body, seeds, start);
+            if (inline.HasValue) return inline.Value;
+            var helpers = new List<int>();
+            for (int i = start; i < il.Count; i++)
+            {
+                if (il[i].OpCode.Code != Code.Call || !(il[i].Operand is IMethod reference) ||
+                    !(reference.ResolveMethodDef() is MethodDef helper) || !helper.IsStatic || !helper.HasBody ||
+                    helper.Module != method.Module || helper.MethodSig?.RetType.FullName != "System.Byte[]" ||
+                    helper.MethodSig.Params.Count != 2 || helper.MethodSig.Params.Any(p => p.FullName != "System.Byte[]")) continue;
+                if (FindLcg(helper.Body, ReadPrologue(helper.Body), 0).HasValue) helpers.Add(i);
+            }
+            if (helpers.Count != 1) throw Unknown();
+            return helpers[0];
+        }
+
+        private static int? FindLcg(CilBody body, Dictionary<Local, int> seeds, int start)
+        {
+            var il = body.Instructions;
+            var multiply = Enumerable.Range(start, il.Count - start).Where(i => il[i].OpCode.Code == Code.Mul &&
+                ConstantEndingAt(body, seeds, start, i) == 214013).ToArray();
+            if (multiply.Length == 0) return null;
+            if (multiply.Length != 1) throw Unknown();
+            int add = FindIndex(multiply[0] + 1, Math.Min(il.Count, multiply[0] + 16), i =>
+                il[i].OpCode.Code == Code.Add && ConstantEndingAt(body, seeds, multiply[0] + 1, i) == 2531011);
+            if (!il.Skip(add + 1).Take(12).Any(i => i.OpCode.Code == Code.Shr_Un)) throw Unknown();
+            return multiply[0];
+        }
+
+        private static int FindArrayFlag(CilBody body, Dictionary<Local, int> seeds, int start, int payload, int[] flags, string arrayType)
+        {
+            var il = body.Instructions;
+            var candidates = new HashSet<int>();
+            for (int mask = start; mask < payload; mask++)
+            {
+                if (il[mask].OpCode.Code != Code.And || !(ConstantRightOperand(body, seeds, start, mask) is int flag) ||
+                    !flags.Contains(flag)) continue;
+                int store = Find(il, mask + 1, Math.Min(payload, mask + 10), i => i.IsStloc());
+                var local = il[store].GetLocal(body.Variables);
+                for (int use = payload; use + 1 < il.Count; use++)
+                {
+                    if (!il[use].IsLdloc() || il[use].GetLocal(body.Variables) != local ||
+                        !(il[use + 1].Operand is Instruction target)) continue;
+                    bool whenTrue = il[use + 1].OpCode.Code == Code.Brtrue || il[use + 1].OpCode.Code == Code.Brtrue_S;
+                    bool whenFalse = il[use + 1].OpCode.Code == Code.Brfalse || il[use + 1].OpCode.Code == Code.Brfalse_S;
+                    if (!whenTrue && !whenFalse) continue;
+                    int jump = il.IndexOf(target);
+                    int first = whenTrue ? jump : use + 2;
+                    int end = whenTrue ? Math.Min(il.Count, jump + 64) : jump;
+                    if (first < 0 || end <= first || end - first > 100) continue;
+                    for (int p = first; p < end; p++)
+                    {
+                        if (il[p].OpCode.FlowControl == FlowControl.Branch || il[p].OpCode.FlowControl == FlowControl.Return) break;
+                        if (il[p].OpCode.Code == Code.Newarr && il[p].Operand is ITypeDefOrRef type)
+                        { if (type.FullName == arrayType) candidates.Add(flag); break; }
+                    }
+                }
+            }
+            if (candidates.Count != 1) throw Unknown();
+            return candidates.Single();
         }
 
         private static int ReadMask(CilBody body, Dictionary<Local, int> seeds, int read, int end)
@@ -111,7 +172,8 @@ namespace EazFixer
         private static Dictionary<Local, int> ReadPrologue(CilBody body)
         {
             var il = body.Instructions;
-            int firstCall = Find(il, 0, il.Count, i => i.OpCode.FlowControl == FlowControl.Call);
+            int firstCall = Enumerable.Range(0, il.Count).Where(i => il[i].OpCode.FlowControl == FlowControl.Call)
+                .DefaultIfEmpty(il.Count).First();
             var immutable = new HashSet<Local>(il.Where(i => i.IsStloc() || i.OpCode.Code == Code.Ldloca ||
                 i.OpCode.Code == Code.Ldloca_S).GroupBy(i => i.GetLocal(body.Variables))
                 .Where(g => g.Count() == 1 && g.First().IsStloc()).Select(g => g.Key));

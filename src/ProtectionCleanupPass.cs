@@ -252,11 +252,7 @@ internal static class ProtectionCleanupPass
     private static int CountTypes(TypeDef type)=>1+type.NestedTypes.Sum(CountTypes);
     private static int CountMethods(TypeDef type)=>type.Methods.Count+type.NestedTypes.Sum(CountMethods);
 
-    private static bool IsVmRuntime(TypeDef type)=>type.Methods.Any(m=>m.MethodSig is {Params.Count:3} s &&
-        s.RetType.ElementType==ElementType.Void && s.Params[0].FullName=="System.IO.Stream" &&
-        s.Params[1].ElementType==ElementType.I8 && s.Params[2].ElementType==ElementType.String) &&
-        type.Methods.Any(m=>m.MethodSig is {Params.Count:>=3} s && s.Params[0].FullName=="System.IO.Stream" &&
-            s.Params[1].ElementType==ElementType.String && s.Params.Last().FullName=="System.Object[]");
+    private static bool IsVmRuntime(TypeDef type)=>AssemblyInspector.IsVmRuntime(type);
 
     private static MethodDef? FindRegistrar(MethodDef init)
     {

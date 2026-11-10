@@ -1,4 +1,5 @@
 using AsmResolver.DotNet;
+using AsmResolver.DotNet.Code.Cil;
 using AsmResolver.PE.DotNet.Cil;
 using EazyDevirt.Core.Abstractions.Interfaces;
 using EazyDevirt.Core.Architecture;
@@ -32,6 +33,40 @@ internal record EazCall : IOpCodePattern
 
     public override bool Verify(VMOpCode vmOpCode, int index) =>
         vmOpCode.SerializedDelegateMethod.CilMethodBody!.Instructions[index + 5].Operand as int? == -0x80000000;
+}
+
+// Equivalent flag extraction expressed with double boolean negation and locals.
+internal record EazCallBooleanFlags : IOpCodePattern
+{
+    public override IList<CilOpCode> Pattern => new[]
+    {
+        CilOpCodes.Ldloc, CilOpCodes.Ldc_I4, CilOpCodes.And, CilOpCodes.Ldc_I4_0,
+        CilOpCodes.Ceq, CilOpCodes.Ldc_I4_0, CilOpCodes.Ceq, CilOpCodes.Stloc,
+        CilOpCodes.Ldloc, CilOpCodes.Ldc_I4, CilOpCodes.And, CilOpCodes.Ldc_I4_0,
+        CilOpCodes.Ceq, CilOpCodes.Ldc_I4_0, CilOpCodes.Ceq, CilOpCodes.Stloc,
+        CilOpCodes.Ldloc, CilOpCodes.Ldc_I4, CilOpCodes.And, CilOpCodes.Stloc,
+    };
+    public override CilOpCode? CilOpCode => CilOpCodes.Call;
+    public override SpecialOpCodes? SpecialOpCode => SpecialOpCodes.EazCall;
+    public override bool IsSpecial => true;
+    public override bool MatchEntireBody => false;
+    public override bool InterchangeLdlocOpCodes => true;
+    public override bool InterchangeStlocOpCodes => true;
+    public override bool Verify(VMOpCode opcode,int index=0)
+    {
+        var ins=opcode.SerializedDelegateMethod.CilMethodBody!.Instructions;
+        int value=ins[index].GetLocalVariableIndex();
+        return ins[index+1].IsLdcI4() && ins[index+1].GetLdcI4Constant()==int.MinValue &&
+            ins[index+9].IsLdcI4() && ins[index+9].GetLdcI4Constant()==0x40000000 &&
+            ins[index+17].IsLdcI4() && ins[index+17].GetLdcI4Constant()==0x3fffffff &&
+            ins[index+8].GetLocalVariableIndex()==value && ins[index+16].GetLocalVariableIndex()==value &&
+            ins[index+19].GetLocalVariableIndex()==value &&
+            ins.Any(i=>i.Operand is IMethodDescriptor target && target.Signature?.ReturnType.FullName=="System.Void" &&
+                target.Signature.ParameterTypes.Count==4 && target.Signature.ParameterTypes[0].FullName=="System.Int32" &&
+                target.Signature.ParameterTypes[1].FullName=="System.Type[]" &&
+                target.Signature.ParameterTypes[2].FullName=="System.Type[]" &&
+                target.Signature.ParameterTypes[3].FullName=="System.Boolean");
+    }
 }
 #endregion EazCall
 

@@ -22,6 +22,54 @@ internal static class ExpandedHandlers
             helper.Signature.ReturnType.FullName == helper.DeclaringType?.FullName;
         var ctx = DevirtualizationContext.Instance;
         bool Pop(int at) => ins[at].Operand is MethodDefinition helper && PatternMatcher.MatchesPattern(new PopStackPattern(), helper);
+        if(ins.Count==17 && ins[0].OpCode.Code==CilCode.Ldarg_1 && ins[1].OpCode.Code==CilCode.Castclass &&
+            ins[2].IsStloc() && ins[3].OpCode.Code==CilCode.Ldarg_0 && ins[4].IsLdloc() &&
+            ins[2].GetLocalVariableIndex()==ins[4].GetLocalVariableIndex() &&
+            ins[5].Operand is IMethodDescriptor methodPosition && methodPosition.Signature?.ReturnType.FullName=="System.Int32" &&
+            ins[6].Operand is IMethodDescriptor methodResolver && methodResolver.Signature?.ReturnType.FullName=="System.Reflection.MethodBase" &&
+            methodResolver.Signature.ParameterTypes.Count==1 && methodResolver.Signature.ParameterTypes[0].FullName=="System.Int32" &&
+            ins[7].IsStloc() && ins[8].OpCode.Code==CilCode.Ldarg_0 && ins[9].OpCode.Code==CilCode.Newobj &&
+            ins[9].Operand is IMethodDescriptor pointerCtor && pointerCtor.Signature?.ParameterTypes.Count==0 &&
+            ins[10].IsStloc() && ins[11].IsLdloc() && ins[12].IsLdloc() && ins[14].IsLdloc() &&
+            ins[10].GetLocalVariableIndex()==ins[11].GetLocalVariableIndex() &&
+            ins[10].GetLocalVariableIndex()==ins[14].GetLocalVariableIndex() &&
+            ins[7].GetLocalVariableIndex()==ins[12].GetLocalVariableIndex() &&
+            ins[13].Operand is IMethodDescriptor pointerSetter && pointerSetter.DeclaringType==pointerCtor.DeclaringType &&
+            pointerSetter.Signature?.ReturnType.FullName=="System.Void" && pointerSetter.Signature.ParameterTypes.Count==1 &&
+            pointerSetter.Signature.ParameterTypes[0].FullName=="System.Reflection.MethodBase" &&
+            Push(15) && ins[16].OpCode.Code==CilCode.Ret)return CilOpCodes.Ldftn;
+        if(ins.Count==9 && opcode.CilOperandType==CilOperandType.InlineNone &&
+            ins[0].OpCode.Code==CilCode.Ldarg_0 && ins[1].Operand is MethodDefinition constantCtor &&
+            ins[1].OpCode.Code==CilCode.Newobj && constantCtor.Name==".ctor" && constantCtor.Parameters.Count==0 &&
+            ins[2].IsStloc() && ins[3].IsLdloc() && ins[4].IsLdcI4() &&
+            ins[6].IsLdloc() && ins[2].GetLocalVariableIndex()==ins[3].GetLocalVariableIndex() &&
+            ins[2].GetLocalVariableIndex()==ins[6].GetLocalVariableIndex() &&
+            ins[5].Operand is MethodDefinition constantSetter && constantSetter.DeclaringType==constantCtor.DeclaringType &&
+            constantSetter.Signature?.ReturnType.FullName=="System.Void" && constantSetter.Parameters.Count==1 &&
+            constantSetter.Parameters[0].ParameterType.FullName=="System.Int32" &&
+            constantCtor.DeclaringType!.Fields.Count(f=>!f.IsStatic)==1 &&
+            constantCtor.DeclaringType.Fields.Single(f=>!f.IsStatic).Signature?.FieldType.FullName=="System.Int32" &&
+            Push(7) && ins[8].OpCode.Code==CilCode.Ret)
+        {
+            int value=ins[4].GetLdcI4Constant();
+            if(value>=-1 && value<=8)return new[]{CilOpCodes.Ldc_I4_M1,CilOpCodes.Ldc_I4_0,CilOpCodes.Ldc_I4_1,
+                CilOpCodes.Ldc_I4_2,CilOpCodes.Ldc_I4_3,CilOpCodes.Ldc_I4_4,CilOpCodes.Ldc_I4_5,CilOpCodes.Ldc_I4_6,
+                CilOpCodes.Ldc_I4_7,CilOpCodes.Ldc_I4_8}[value+1];
+        }
+        if(ins.Count==15 && ins[0].OpCode.Code==CilCode.Ldarg_0 && Pop(1) &&
+            ins[2].Operand is IMethodDescriptor arrayValue && arrayValue.Signature?.ReturnType.FullName=="System.Object" &&
+            ins[3].OpCode.Code==CilCode.Castclass && ins[3].Operand is ITypeDefOrRef arrayType && arrayType.FullName=="System.Array" &&
+            ins[4].IsStloc() && ins[5].OpCode.Code==CilCode.Ldarg_0 && ins[6].OpCode.Code==CilCode.Newobj &&
+            ins[6].Operand is IMethodDescriptor lengthCtor && lengthCtor.Signature?.ParameterTypes.Count==0 &&
+            ins[7].IsStloc() && ins[8].IsLdloc() && ins[9].IsLdloc() && ins[12].IsLdloc() &&
+            ins[7].GetLocalVariableIndex()==ins[8].GetLocalVariableIndex() &&
+            ins[7].GetLocalVariableIndex()==ins[12].GetLocalVariableIndex() &&
+            ins[4].GetLocalVariableIndex()==ins[9].GetLocalVariableIndex() &&
+            ins[10].Operand is IMethodDescriptor arrayLength && arrayLength.FullName=="System.Int32 System.Array::get_Length()" &&
+            ins[11].Operand is IMethodDescriptor lengthSetter && lengthSetter.DeclaringType==lengthCtor.DeclaringType &&
+            lengthSetter.Signature?.ReturnType.FullName=="System.Void" && lengthSetter.Signature.ParameterTypes.Count==1 &&
+            lengthSetter.Signature.ParameterTypes[0].FullName=="System.Int32" && Push(13) && ins[14].OpCode.Code==CilCode.Ret)
+            return CilOpCodes.Ldlen;
         if (ins.Count==13 && ins[0].OpCode.Code==CilCode.Ldarg_0 && Pop(1) &&
             ins[2].Operand is IMethodDescriptor unboxValue && unboxValue.Signature?.ReturnType.FullName=="System.Object" &&
             ins[3].OpCode.Code==CilCode.Castclass && ins[3].Operand is ITypeDefOrRef array && array.FullName=="System.Array" &&
@@ -58,7 +106,7 @@ internal static class ExpandedHandlers
                         (body[i+1].Operand is IMethodDescriptor resultSetter &&
                         resultSetter.Signature?.ReturnType.FullName=="System.Void" && resultSetter.Signature.ParameterTypes.Count==1 &&
                         resultSetter.Signature.ParameterTypes[0].FullName is "System.Int32" or "System.Int64" &&
-                        body[i+2].OpCode.Code==CilCode.Ret)))
+                        body[i+2].OpCode.Code==CilCode.Ret) || StoredArithmeticResult(body,i)))
                         operations.Add(body[i].OpCode.Code==CilCode.Shr_Un ? CilCode.Shr : body[i].OpCode.Code);
                 if(operations.Count==1) return operations.Single() switch {
                     CilCode.Div => unsigned ? CilOpCodes.Div_Un : CilOpCodes.Div,
@@ -217,6 +265,26 @@ internal static class ExpandedHandlers
                     CilOpCodes.Ldc_I4_7, CilOpCodes.Ldc_I4_8 }[value + 1];
         }
         return null;
+    }
+
+    private static bool StoredArithmeticResult(CilInstructionCollection instructions,int operation)
+    {
+        if(operation+3>=instructions.Count || instructions[operation+1].Operand is not IMethodDescriptor setter ||
+            setter.Signature?.ReturnType.FullName!="System.Void" || setter.Signature.ParameterTypes.Count!=1 ||
+            setter.Signature.ParameterTypes[0].FullName is not ("System.Int32" or "System.Int64") ||
+            !instructions[operation+2].IsLdloc() || instructions[operation+3].OpCode.Code!=CilCode.Ret)return false;
+        int result=instructions[operation+2].GetLocalVariableIndex();
+        for(int start=Math.Max(0,operation-6);start+4<operation;start++)
+        {
+            if(instructions[start].OpCode.Code!=CilCode.Newobj || instructions[start].Operand is not IMethodDescriptor ctor ||
+                ctor.Signature?.ParameterTypes.Count!=0 || ctor.DeclaringType!=setter.DeclaringType ||
+                !instructions[start+1].IsStloc() || !instructions[start+2].IsLdloc() ||
+                instructions[start+1].GetLocalVariableIndex()!=result || instructions[start+2].GetLocalVariableIndex()!=result)continue;
+            var operands=instructions.Skip(start+3).Take(operation-start-3).ToArray();
+            if(operands.Count(i=>i.IsLdloc())==2 && operands.All(i=>i.IsLdloc() ||
+                i.OpCode.Code is CilCode.Conv_I8 or CilCode.Conv_U8))return true;
+        }
+        return false;
     }
 
     private static bool LocalAddress(DevirtualizationContext ctx,TypeDefinition wrapper)

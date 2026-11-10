@@ -26,12 +26,13 @@ internal record VMExceptionHandler
         _layout = layout;
         foreach (var field in layout.Fields)
             switch (field) {
-                case VMExceptionField.Kind: VMHandlerType = reader.ReadByte(); break;
+                case VMExceptionField.Kind: VMHandlerType = layout.Int32Kind ? reader.ReadInt32() : reader.ReadByte(); break;
                 case VMExceptionField.CatchType: CatchType = reader.ReadInt32(); break;
                 case VMExceptionField.HandlerStart: HandlerStart = reader.ReadUInt32(); break;
                 case VMExceptionField.TryStart: TryStart = reader.ReadUInt32(); break;
                 case VMExceptionField.TryLength: TryLength = reader.ReadUInt32(); break;
                 case VMExceptionField.FilterStart: FilterStart = reader.ReadUInt32(); break;
+                case VMExceptionField.UnusedOffset: reader.ReadUInt32(); break;
             }
     }
 

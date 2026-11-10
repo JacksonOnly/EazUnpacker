@@ -11,6 +11,7 @@ internal class MethodDevirtualizer : StageBase
 {
     private CryptoStreamV3 VMStream { get; set; }
     private VMBinaryReader VMStreamReader { get; set; }
+    private BinaryReader MetadataReader { get; set; }
     
     private Resolver Resolver { get; set; }
     private VMHeaderLayout HeaderLayout { get; set; }
@@ -25,10 +26,14 @@ internal class MethodDevirtualizer : StageBase
         ExceptionLayout = VMExceptionLayout.Discover(Ctx.VMDeclaringType);
         Homomorphic = new HomomorphicReader(Ctx);
         
-        VMStream = new CryptoStreamV3(Ctx.VMStream, Ctx.MethodCryptoKey, true);
-        VMStreamReader = new VMBinaryReader(VMStream);
+        VMStream = Ctx.CreateCryptoStream(Ctx.VMStream, Ctx.MethodCryptoKey);
+        using var codeReader = new VMBinaryReader(VMStream);
+        VMStreamReader = codeReader;
+        using var metadataReader = Ctx.CreateMetadataReader(VMStream);
+        MetadataReader = metadataReader;
         
-        Resolver = new Resolver(Ctx);
+        using var resolver = new Resolver(Ctx);
+        Resolver = resolver;
         CalibrateHeader();
         Ctx.Progress?.Invoke("VM 方法还原",0,Ctx.VMMethods.Count);
         for (int pass = 0; pass < 3; pass++)
@@ -38,7 +43,7 @@ internal class MethodDevirtualizer : StageBase
         Homomorphic.AllowBoundedSearch=pass==2;
         int restoredBefore = Ctx.VMMethods.Count(m=>m.SuccessfullyDevirtualized);
         int restoredInPass=restoredBefore;
-        foreach (var vmMethod in Ctx.VMMethods.Where(m=>!m.SuccessfullyDevirtualized))
+        foreach (var vmMethod in Ctx.VMMethods.Where(m=>!m.SuccessfullyDevirtualized && m.MethodKey>=0))
         {
             var originalBody=vmMethod.Parent.CilMethodBody;
             try {
@@ -66,7 +71,6 @@ internal class MethodDevirtualizer : StageBase
         if(Ctx.VMMethods.Count(m=>m.SuccessfullyDevirtualized)==restoredBefore && pass==2)break;
         }
         
-        VMStreamReader.Dispose();
         return true;
     }
 
@@ -86,7 +90,7 @@ internal class MethodDevirtualizer : StageBase
             }
             try {
                 VMStream.Position=method.MethodKey;
-                var info=new VMMethodInfo(VMStreamReader,HeaderLayout);
+                var info=new VMMethodInfo(MetadataReader,HeaderLayout);
                 if(Ctx.Options.VeryVeryVerbose) Ctx.Console.Info($"Header sample {method.Parent.MetadataToken}: flags={info.BindingFlags}, metadata static={method.Parent.IsStatic}, name={method.Parent.Name}");
                 // Inlining may put a call to another virtual method inside a
                 // nonvirtual host. Such a call does not describe its host's
@@ -114,7 +118,7 @@ internal class MethodDevirtualizer : StageBase
     
     private void ReadVMMethod(VMMethod vmMethod)
     {
-        vmMethod.MethodInfo = new VMMethodInfo(VMStreamReader,HeaderLayout);
+        vmMethod.MethodInfo = new VMMethodInfo(MetadataReader,HeaderLayout);
 
         ReadExceptionHandlers(vmMethod);
 
@@ -216,9 +220,9 @@ internal class MethodDevirtualizer : StageBase
     
     private void ReadExceptionHandlers(VMMethod vmMethod)
     {
-        vmMethod.VMExceptionHandlers = new List<VMExceptionHandler>(VMStreamReader.ReadInt16());
+        vmMethod.VMExceptionHandlers = new List<VMExceptionHandler>(MetadataReader.ReadInt16());
         for (var i = 0; i < vmMethod.VMExceptionHandlers.Capacity; i++)
-            vmMethod.VMExceptionHandlers.Add(new VMExceptionHandler(VMStreamReader, ExceptionLayout));
+            vmMethod.VMExceptionHandlers.Add(new VMExceptionHandler(MetadataReader, ExceptionLayout));
 
         vmMethod.VMExceptionHandlers.Sort((first, second) =>
             first.TryStart == second.TryStart
@@ -246,7 +250,7 @@ internal class MethodDevirtualizer : StageBase
         vmMethod.Instructions = new List<CilInstruction>();
         vmMethod.EncryptedRegions=0;
         vmMethod.VirtualOffsets = new List<uint>();
-        vmMethod.CodeSize = VMStreamReader.ReadInt32();
+        vmMethod.CodeSize = MetadataReader.ReadInt32();
         if (vmMethod.CodeSize <= 0 || vmMethod.CodeSize > VMStream.Length - VMStream.Position)
             throw new InvalidDataException("Invalid VM code size.");
         vmMethod.InitialCodeStreamPosition = VMStream.Position;

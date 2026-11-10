@@ -133,7 +133,13 @@ internal sealed class MethodDiscovery : StageBase
                     Failure = "Invalid VM position encoding." });
                 continue;
             }
-            if(methodKey<0 || methodKey>=Ctx.VMStream.Length) {Ctx.Console.Warning("VM method position out of bounds: "+method.MetadataToken);continue;}
+            if(methodKey<0 || methodKey>=Ctx.VMStream.Length)
+            {
+                Ctx.Console.Warning("VM method position out of bounds: "+method.MetadataToken);
+                Ctx.VMMethods.Add(new VMMethod(method,encodedMethodKey,-1){ExecutorInstruction=callSite.Executor,
+                    Failure="VM method position is outside the resource."});
+                continue;
+            }
             Ctx.VMMethods.Add(new VMMethod(method, encodedMethodKey, methodKey) { ExecutorInstruction = callSite.Executor });
             }
         }
@@ -230,7 +236,8 @@ internal sealed class MethodDiscovery : StageBase
     {
         var decoded = Ascii85.FromAscii85String(positionString);
 
-        using var reader = new VMBinaryReader(new CryptoStreamV3(new MemoryStream(decoded), positionKey));
+        using var stream = DevirtualizationContext.Instance.CreateCryptoStream(new MemoryStream(decoded), positionKey,false);
+        using var reader = DevirtualizationContext.Instance.CreateMetadataReader(stream);
         return reader.ReadInt64();
     }
 
@@ -249,12 +256,11 @@ internal sealed class MethodDiscovery : StageBase
                && method.CilMethodBody.Instructions[0].IsLdcI4();
     }
 
-    private static bool IsLoadVMPositionMethod(MethodDefinition method)
+    internal static bool IsLoadVMPositionMethod(MethodDefinition method)
     {
         return method is { IsStatic: false, Signature.ReturnsValue: false, Parameters.Count: 3 }
-               && method.Parameters[0].ParameterType.FullName == typeof(Stream).FullName
-               && method.Parameters[1].ParameterType.FullName == typeof(long).FullName
-               && method.Parameters[2].ParameterType.FullName == typeof(string).FullName
+               && method.Parameters.Select(p=>p.ParameterType.FullName).OrderBy(n=>n,StringComparer.Ordinal)
+                   .SequenceEqual(new[]{"System.IO.Stream","System.Int64","System.String"})
                && method.CilMethodBody is not null;
     }
 }

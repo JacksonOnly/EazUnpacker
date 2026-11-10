@@ -33,16 +33,8 @@ namespace EazFixer
                 var wrappers = new Dictionary<MethodDef, MethodDef>();
                 foreach (var wrapper in StringFixUtils.FindStringDecryptMethods(module))
                 {
-                    var candidates = wrapper.Body.Instructions.Where(i => i.OpCode.Code == Code.Call)
-                        .Select(i => (i.Operand as IMethod)?.ResolveMethodDef())
-                        .Where(m => m != null && m.DeclaringType == wrapper.DeclaringType && m.IsStatic && m.HasBody &&
-                            m.MethodSig?.RetType.ElementType == ElementType.String && m.MethodSig.Params.Count == 2 &&
-                            m.MethodSig.Params[0].ElementType == ElementType.I4 && m.MethodSig.Params[1].ElementType == ElementType.Boolean &&
-                            m.Body.Instructions.Any(i => i.Operand is IMethod op && op.Name == "GetManifestResourceStream" &&
-                                op.DeclaringType.FullName == "System.Reflection.Assembly"))
-                        .Distinct().ToArray();
-                    if (candidates.Length > 1) throw new StringResourceException("Eaz 字符串解码入口不唯一。");
-                    if (candidates.Length == 1) wrappers.Add(wrapper, candidates[0]);
+                    var core = StringFixUtils.FindDecoderCore(wrapper, true);
+                    if (core != null) wrappers.Add(wrapper, core);
                 }
                 if (wrappers.Count == 0) throw new StringResourceException("未发现受支持的 Eaz 字符串资源解码器。");
 

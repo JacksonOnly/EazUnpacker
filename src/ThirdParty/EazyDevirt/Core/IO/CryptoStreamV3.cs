@@ -8,6 +8,7 @@ namespace EazyDevirt.Core.IO;
 public class CryptoStreamV3 : CryptoStreamBase
 {
     private const uint Constant = 0xDEADDE4D;
+    private readonly bool _positionOr;
 
     /// <summary>
     ///     Initializes a new instance of the CryptoStreamV3 class with the specified stream, encryption key, and leaveOpen
@@ -21,6 +22,11 @@ public class CryptoStreamV3 : CryptoStreamBase
         CryptoKey = (int)(key ^ Constant);
     }
 
+    internal CryptoStreamV3(Stream stream,int key,bool leaveOpen,bool positionOr) : this(stream,key,leaveOpen)
+    {
+        _positionOr=positionOr;
+    }
+
     private int CryptoKey { get; }
 
     /// <summary>
@@ -31,7 +37,7 @@ public class CryptoStreamV3 : CryptoStreamBase
     /// <returns>The encrypted/decrypted byte.</returns>
     protected override byte Crypt(byte inputByte, uint inputKey)
     {
-        var xoredKey = (byte)(CryptoKey ^ (int)inputKey);
+        var xoredKey = _positionOr ? (byte)((uint)Key | inputKey) : (byte)(CryptoKey ^ (int)inputKey);
         return (byte)(inputByte ^ xoredKey);
     }
 }

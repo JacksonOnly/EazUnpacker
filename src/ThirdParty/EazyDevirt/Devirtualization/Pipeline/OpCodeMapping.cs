@@ -16,9 +16,11 @@ internal class OpCodeMapping : StageBase
     private protected override bool Init()
     {
         var executeVMMethodPattern = new ExecuteVMMethodPattern();
+        var executeVMMethodWithoutFlagPattern = new ExecuteVMMethodWithoutTypeFlagPattern();
         var executeVMMethod =
             Ctx.VMDeclaringType.Methods.FirstOrDefault(method =>
-                PatternMatcher.GetAllMatchingInstructions(executeVMMethodPattern, method).Count >= 1);
+                PatternMatcher.GetAllMatchingInstructions(executeVMMethodPattern, method).Count >= 1 ||
+                PatternMatcher.GetAllMatchingInstructions(executeVMMethodWithoutFlagPattern, method).Count >= 1);
         
         if (executeVMMethod == null)
         {
@@ -91,6 +93,17 @@ internal class OpCodeMapping : StageBase
     {
         using var normalization = new RuntimePatternNormalization(Ctx.VMDeclaringType);
         if (!Init()) return false;
+        Ctx.PositionOrCipher=VMFormatDiscovery.PositionOrCipher(Ctx.VMDeclaringType);
+        Ctx.StandardMetadataReader=Ctx.VMDeclaringType.Methods.Where(MethodDiscovery.IsLoadVMPositionMethod)
+            .Any(m=>m.CilMethodBody!.Instructions.Zip(m.CilMethodBody.Instructions.Skip(1),(first,second)=>(first,second))
+                .Any(p=>p.first.OpCode.Code==CilCode.Newobj && p.first.Operand is IMethodDescriptor constructor &&
+                    constructor.DeclaringType?.FullName=="System.IO.BinaryReader" && p.second.OpCode.Code==CilCode.Stfld &&
+                    p.second.Operand is FieldDefinition field && field.DeclaringType==Ctx.VMDeclaringType &&
+                    field.Signature?.FieldType.FullName=="System.IO.BinaryReader" &&
+                    m.CilMethodBody.Instructions.Zip(m.CilMethodBody.Instructions.Skip(1),(load,call)=>(load,call)).Any(use=>
+                        use.load.OpCode.Code==CilCode.Ldfld && use.load.Operand==field && use.call.Operand is MethodDefinition parser &&
+                        parser.Parameters.Count==1 && parser.Parameters[0].ParameterType.FullName=="System.IO.BinaryReader" &&
+                        parser.Signature?.ReturnsValue==true)));
         Ctx.OperandLayout = VMFormatDiscovery.OperandTypes(Ctx.VMDeclaringType);
         Ctx.InlineLayout = VMFormatDiscovery.InlineTypes(Ctx.VMDeclaringType);
         Ctx.TokenTag = VMFormatDiscovery.TokenTag(Ctx.VMDeclaringType);

@@ -7,19 +7,27 @@ using EazyDevirt.Devirtualization;
 
 namespace EazyDevirt.Core.IO;
 
-internal class Resolver
+internal class Resolver : IDisposable
 {
     public Resolver(DevirtualizationContext ctx)
     {
         Ctx = ctx;
-        VMStreamReader = new VMBinaryReader(new CryptoStreamV3(Ctx.VMResolverStream, Ctx.MethodCryptoKey, true));
+        _stream=Ctx.CreateCryptoStream(Ctx.VMResolverStream,Ctx.MethodCryptoKey);
+        VMStreamReader = Ctx.CreateMetadataReader(_stream);
         Cache = new Dictionary<int, object?>();
         OriginalTypeReferences = ctx.Module.GetImportedTypeReferences().ToArray();
     }
     
     private DevirtualizationContext Ctx { get; }
     
-    private VMBinaryReader VMStreamReader { get; }
+    private BinaryReader VMStreamReader { get; }
+    private readonly CryptoStreamV3 _stream;
+
+    public void Dispose()
+    {
+        VMStreamReader.Dispose();
+        _stream.Dispose();
+    }
     
     private Dictionary<int, object?> Cache { get; }
     private Dictionary<int, TypeSignature> TypeSignatures { get; } = new();
