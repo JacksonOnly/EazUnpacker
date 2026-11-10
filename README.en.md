@@ -2,7 +2,7 @@
 
 A command-line unpacker and deobfuscator for **Eazfuscator.NET managed assemblies**. Recover analyzable IL, generate readable identifiers, and optionally export a C# project.
 
-[简体中文](README.md) · **English** · **v1.4.2** · [Changelog](CHANGELOG.md)
+[简体中文](README.md) · **English** · **v1.5.0** · [Changelog](CHANGELOG.md)
 
 [Quick start](#quick-start) · [Features](#features) · [String editing](#edit-encrypted-strings-in-place) · [Resource editing](#extract-and-replace-resources) · [Options](#options-and-exit-codes) · [Development](#development-and-build)
 
@@ -27,7 +27,7 @@ A command-line unpacker and deobfuscator for **Eazfuscator.NET managed assemblie
 
 ### 1. Extract the complete release
 
-Extract `EazUnpacker-v1.4.2-win.zip` and keep every subdirectory under `worker`. Run `Unpacker.exe`; copying the EXE alone is not sufficient.
+Extract `EazUnpacker-v1.5.0-win.zip` and keep every subdirectory under `worker`. Run `Unpacker.exe`; copying the EXE alone is not sufficient.
 
 - **Runtime**: Windows and .NET Framework 4.8. BAML conversion requires .NET 8 or later; modern WPF targets also need a suitable .NET Desktop Runtime. Modern workers can roll forward to installed newer major versions.
 - **Permissions**: use a short, writable directory; the tool creates `temp` beside its executable. Framework loaders or third-party tools can still encounter Windows long-path limits.
