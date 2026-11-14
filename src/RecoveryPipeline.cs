@@ -243,6 +243,24 @@ internal static class RecoveryPipeline
                         Detail="Folded literal conditional branches and dropped only statically unreachable instructions; exception regions, tokens, definitions and reachable effects retained; see control-flow-cleanup.json."});
                 }
             }
+            string comparisons=Path.Combine(dir,"comparisons"+Path.GetExtension(cleaned));
+            try
+            {
+                int recovered=ProtectedComparisonRecovery.Process(cleaned,target,comparisons,Path.Combine(dir,"protected-comparisons.json"));
+                if(recovered>0)
+                {
+                    if(File.Exists(cleaned+".config"))File.Copy(cleaned+".config",comparisons+".config");
+                    cleaned=comparisons;RememberOutput(result,cleaned,dir);
+                }
+                result.Stages.Add(new StageResult{Name="ProtectedComparisons",Status="success",Changes=recovered,
+                    Detail="Verified boxed Int32 comparisons lowered to direct equality, including previous generated wrappers; other constants remain annotated with the original predicate. Unmatched, ambiguous and budget-limited calls unchanged; see protected-comparisons.json."});
+                ProgressEvents.Send(4,"info","加密常量比较还原 "+recovered+" 处；已验证整数比较直接简化，其余保持原判断");
+            }
+            catch(Exception ex)
+            {
+                result.Stages.Add(new StageResult{Name="ProtectedComparisons",Status="partial",Detail=ex.ToString()});
+                ProgressEvents.Send(4,"warning","常量比较还原未完成，保留此前恢复产物。");
+            }
             result.After = AssemblyInspector.Inspect(cleaned); result.Output = cleaned;
             if (bundleFiles != null)
             {

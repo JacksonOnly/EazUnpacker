@@ -28,6 +28,7 @@ internal static class NameRecoveryPass
         if (genericType) name = Regex.Replace(name!, @"`\d+$", "");
         if (name!.StartsWith("#=") || name.StartsWith("<") || Keywords.Contains(name)) return true;
         if(Regex.IsMatch(name,@"^[acfmv]\d{5,}$"))return true;
+        if(name.Length>=64&&name.Count(char.IsDigit)>=name.Length/8&&name.Count(char.IsUpper)>=name.Length/8)return true;
         if (!(name[0] == '_' || char.IsLetter(name[0]))) return true;
         if (name.Any(c => c > 127 || !(c == '_' || char.IsLetterOrDigit(c)))) return true;
         if(Regex.IsMatch(name,@"^[A-Za-z_][A-Za-z0-9_]*(?:Field[0-9A-F]{4,}|Argument\d+|Local\d+)_*$"))return false;
